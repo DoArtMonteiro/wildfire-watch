@@ -6,10 +6,14 @@ import type { DetectionFeedSnapshot, DetectionSelection, FeedLoadStatus, Thermal
 import { useLocale } from "@/lib/i18n/LocaleProvider";
 import FireDetailsPanel from "./FireDetailsPanel";
 import GlobalOverview from "./GlobalOverview";
+import IncidentDetailsPanel from "@/components/operational/IncidentDetailsPanel";
 
 interface SidePanelProps {
   detections: ThermalDetection[];
   selection: DetectionSelection | null;
+  /** An official occurrence chosen in the panel or on the map; shown instead of a detection. */
+  selectedIncidentId: string | null;
+  onSelectIncident: (incidentId: string) => void;
   isMinimized: boolean;
   onClose: () => void;
   onToggleMinimized: () => void;
@@ -24,6 +28,8 @@ interface SidePanelProps {
 export default function SidePanel({
   detections,
   selection,
+  selectedIncidentId,
+  onSelectIncident,
   isMinimized,
   onClose,
   onToggleMinimized,
@@ -46,7 +52,7 @@ export default function SidePanel({
   // Always docked — "Mission Control" reads as a permanent instrument, not a
   // modal that appears/disappears. Only the content and the mobile sheet's
   // height change between the global dashboard and a single fire's detail.
-  const detailOpen = selection !== null;
+  const detailOpen = selection !== null || selectedIncidentId !== null;
 
   return (
     <aside
@@ -75,9 +81,16 @@ export default function SidePanel({
       {/* tabIndex -1: the skip link can move focus here, and keyboard users can
           scroll the panel without first tabbing to a control inside it. */}
       <div id="mission-control-panel-content" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-smooth">
-        <div key={selection?.id ?? "overview"} className="min-h-full motion-safe:animate-[panel-content-enter_280ms_ease-out_both]">
-          {isDesktop || !isMinimized ? selection ? (
-            <FireDetailsPanel selection={selection} provenance={feedSnapshot?.provenance ?? null} onClose={onClose} />
+        <div key={selectedIncidentId ?? selection?.id ?? "overview"} className="min-h-full motion-safe:animate-[panel-content-enter_280ms_ease-out_both]">
+          {isDesktop || !isMinimized ? selectedIncidentId ? (
+            <IncidentDetailsPanel incidentId={selectedIncidentId} onClose={onClose} />
+          ) : selection ? (
+            <FireDetailsPanel
+              selection={selection}
+              provenance={feedSnapshot?.provenance ?? null}
+              onClose={onClose}
+              onSelectIncident={onSelectIncident}
+            />
           ) : (
             <GlobalOverview
               detections={detections}
@@ -85,6 +98,7 @@ export default function SidePanel({
               selectedCountry={selectedCountry}
               onCountryChange={onCountryChange}
               onSelectDetection={onSelectDetection}
+              onSelectIncident={onSelectIncident}
               feedSnapshot={feedSnapshot}
               feedState={feedState}
             />

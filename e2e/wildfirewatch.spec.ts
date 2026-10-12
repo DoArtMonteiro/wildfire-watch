@@ -3,11 +3,14 @@ import AxeBuilder from "@axe-core/playwright";
 import en from "../src/lib/i18n/en";
 import pt from "../src/lib/i18n/pt";
 import { rewriteFeed, stubThirdParties, watchCspViolations } from "./support/stubs";
+import { waitForServer } from "./support/server";
 
 const MINUTE = 60_000;
 const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 
 let cspViolations: string[] = [];
+
+test.beforeEach(async ({ request }, testInfo) => waitForServer(request, testInfo));
 
 test.beforeEach(async ({ page }) => {
   cspViolations = await watchCspViolations(page);
@@ -95,9 +98,11 @@ test("selects a detection from the keyboard and explains what is known about it"
 
   await expect(page.getByRole("heading", { name: pt.fireDetail.pointTitle })).toBeVisible();
 
+  // The satellite reports heat only; the status comes from the official occurrence it is linked to.
   const status = page.getByTestId("operational-status");
-  await expect(status).toContainText(pt.operationalStatus.unknown);
-  await expect(status).toContainText(pt.fireDetail.operationalUnknownNote);
+  await expect(status).toContainText(pt.operational.phase.in_progress);
+  await expect(status).toContainText(pt.operational.reportedBy);
+  await expect(status.getByTestId("operational-detail")).toHaveAttribute("data-state", "matched");
 
   const observation = page.getByRole("region", { name: pt.fireDetail.satelliteTelemetryTitle });
   await expect(observation).toContainText("912,4 MW");

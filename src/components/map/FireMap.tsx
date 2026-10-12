@@ -22,6 +22,8 @@ import {
 } from "./mapPresentation";
 import { syncSatelliteLayers } from "./satelliteLayers";
 import { isMapRendererUnavailable } from "./rendererSupport";
+import IncidentLayers, { INCIDENT_HIT_AREA_LAYER_ID, INCIDENT_LAYER_ID } from "./IncidentLayers";
+import { useOperationalFeed } from "@/components/operational/OperationalFeedProvider";
 import { EMPTY_DETAIL_STATE, detailStateForSelection, withDetailPoints, type DetailState } from "./detailState";
 import { useLocale } from "@/lib/i18n/LocaleProvider";
 
@@ -51,12 +53,18 @@ const SELECTED_PIXEL_FILL_LAYER_ID = "selected-viirs-pixels-fill";
 // Cluster and marker hit areas retain broad pointer targets while selected
 // detections render separately as sensor-sized polygons.
 const INTERACTIVE_LAYER_IDS = [
+  INCIDENT_LAYER_ID,
+  INCIDENT_HIT_AREA_LAYER_ID,
   CLUSTER_HIT_AREA_LAYER_ID,
   CLUSTER_LAYER_ID,
   MARKER_HIT_AREA_LAYER_ID,
   MARKER_LAYER_ID,
 ];
+// Official occurrences first: their rings sit on top and are few, so a tap on
+// one should open it rather than the detections underneath.
 const INTERACTION_PRIORITY = [
+  INCIDENT_LAYER_ID,
+  INCIDENT_HIT_AREA_LAYER_ID,
   CLUSTER_HIT_AREA_LAYER_ID,
   CLUSTER_LAYER_ID,
   MARKER_HIT_AREA_LAYER_ID,
@@ -69,6 +77,8 @@ const POINTER_QUERY_RADIUS = 12;
 // to one side. Also the "Voltar ao mapa global" fly-back target below.
 const WORLD_VIEW = { longitude: -9.0, latitude: 39.0, zoom: 3 };
 const FIRE_DETAIL_ZOOM = 12;
+/** Close enough to see the detections around an occurrence's registered location. */
+const INCIDENT_ZOOM = 11;
 // A controlled, soft-spring-like flight that keeps the selected point visible
 // in the unobstructed map area beside the mission panel.
 const FLY_DURATION_MS = 1350;
@@ -244,13 +254,27 @@ interface FireMapProps {
   onMapLoad: () => void;
   /** Called once if this browser or device cannot draw the map (no WebGL2). */
   onRendererUnavailable: () => void;
+  selectedIncidentId: string | null;
+  onSelectIncident: (incidentId: string) => void;
   theme: "dark" | "light";
   basemapMode: BasemapMode;
   countryScope: string;
   timelineHour: number;
 }
 
-export default function FireMap({ detections, allDetections, selection, onSelect, onMapLoad, onRendererUnavailable, theme, basemapMode, countryScope, timelineHour }: FireMapProps) {
+export default function FireMap({ detections, allDetections, selection, onSelect, onMapLoad, onRendererUnavailable, selectedIncidentId, onSelectIncident, theme, basemapMode, countryScope, timelineHour }: FireMapProps) {
+  const { feed: operationalFeed } = useOperationalFeed();
+  // Primitives, so a feed refresh that re-creates the same occurrence does not
+  // look like a new location to the camera effect.
+  const selectedIncident = operationalFeed?.incidents.find((incident) => incident.id === selectedIncidentId);
+  const incidentLat = selectedIncident?.location.lat ?? null;
+  const incidentLng = selectedIncident?.location.lng ?? null;
+  const selectedIncidentLocation = useMemo(
+    () => (incidentLat !== null && incidentLng !== null ? { lat: incidentLat, lng: incidentLng } : null),
+    [incidentLat, incidentLng],
+  );
+  /** The occurrence the camera last flew to, so it flies once per selection. */
+  const flownIncidentRef = useRef<string | null>(null);
   const mapRef = useRef<MapRef>(null);
   const hasReportedMapLoadRef = useRef(false);
   const [mapInstance, setMapInstance] = useState<MapLibreMap | null>(null);
@@ -578,6 +602,12 @@ export default function FireMap({ detections, allDetections, selection, onSelect
         return;
       }
 
+      if (feature.layer?.id === INCIDENT_LAYER_ID || feature.layer?.id === INCIDENT_HIT_AREA_LAYER_ID) {
+        const incidentId = feature.properties?.incidentId;
+        if (typeof incidentId === "string") onSelectIncident(incidentId);
+        return;
+      }
+
       if (feature.properties?.cluster && feature.geometry.type === "Point") {
         const clusterId = Number(feature.properties.cluster_id);
         const pointCount = Number(feature.properties.point_count);
@@ -608,7 +638,7 @@ export default function FireMap({ detections, allDetections, selection, onSelect
       const detection = detectionById.get(String(feature.properties?.detectionId ?? ""));
       onSelect(detection ? detectionToSelection(detection) : null);
     },
-    [detectionById, onSelect],
+    [detectionById, onSelect, onSelectIncident],
   );
 
   const handleMove = useCallback((e: MapLayerMouseEvent) => {
@@ -706,6 +736,20 @@ export default function FireMap({ detections, allDetections, selection, onSelect
     if (!map) return;
 
     if (selection?.kind === "cluster") return;
+    // An occurrence is flown to once. Later refreshes, including one in which
+    // it closes, leave the camera where the visitor put it.
+    if (selectedIncidentId) {
+      if (selectedIncidentLocation && flownIncidentRef.current !== selectedIncidentId) {
+        flownIncidentRef.current = selectedIncidentId;
+        try {
+          flyToLocation(map, selectedIncidentLocation, INCIDENT_ZOOM, true);
+        } catch {
+          // Stale/torn-down map instance — nothing to recover, just skip.
+        }
+      }
+      return;
+    }
+    flownIncidentRef.current = null;
     try {
       if (selection?.kind === "detection") {
         flyToLocation(map, selection.location, FIRE_DETAIL_ZOOM, true);
@@ -734,7 +778,7 @@ export default function FireMap({ detections, allDetections, selection, onSelect
     } catch {
       // Stale/torn-down map instance — nothing to recover, just skip.
     }
-  }, [countryScope, detections, selection?.id, selection?.kind, selection?.location]);
+  }, [countryScope, detections, selection?.id, selection?.kind, selection?.location, selectedIncidentId, selectedIncidentLocation]);
 
   return (
     <div
@@ -970,6 +1014,9 @@ export default function FireMap({ detections, allDetections, selection, onSelect
             cleanly and the squares tessellate into the organic mosaic shape
             the NASA-FIRMS reference shows. */}
       </Source>
+
+      {/* Official occurrences (ANEPC) as rings above the detections. */}
+      <IncidentLayers selectedIncidentId={selectedIncidentId} theme={theme} basemapMode={basemapMode} />
       </Map>
     </div>
   );

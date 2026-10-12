@@ -10,12 +10,15 @@ import { formatCompactDecimal, formatDecimal, formatUtcDateTime } from "@/lib/i1
 import { useLocale } from "@/lib/i18n/LocaleProvider";
 import FireTelemetryDashboard from "./FireTelemetryDashboard";
 import PanelFooter from "./PanelFooter";
+import DetectionOperationalDetails, { useDetectionOperationalState } from "@/components/operational/DetectionOperationalDetails";
+import { PhaseBadge } from "@/components/operational/OperationalBadges";
 
 interface FireDetailsPanelProps {
   selection: DetectionSelection;
   /** Provenance of the snapshot the selection came from; null if it is not known. */
   provenance: SnapshotProvenance | null;
   onClose: () => void;
+  onSelectIncident: (incidentId: string) => void;
 }
 
 interface LocationResult {
@@ -24,8 +27,13 @@ interface LocationResult {
   failed: boolean;
 }
 
-export default function FireDetailsPanel({ selection, provenance, onClose }: FireDetailsPanelProps) {
+export default function FireDetailsPanel({ selection, provenance, onClose, onSelectIncident }: FireDetailsPanelProps) {
   const { locale, t } = useLocale();
+  const operational = useDetectionOperationalState(selection, provenance?.processedAt ?? null);
+  // Status comes only from a source that reports it: the linked official occurrence, if any.
+  const linkedIncident = operational.state.kind === "matched" && operational.state.incidents.length === 1
+    ? operational.state.incidents[0]
+    : null;
   const [weather, setWeather] = useState<ModelledWeather | null>(null);
   const [weatherFailed, setWeatherFailed] = useState(false);
   const [locationResult, setLocationResult] = useState<LocationResult | null>(null);
@@ -161,13 +169,18 @@ export default function FireDetailsPanel({ selection, provenance, onClose }: Fir
           <h3 id="operational-status-title" className="text-xs font-semibold uppercase tracking-wide text-foreground/65">
             {t.fireDetail.operationalStatusLabel}
           </h3>
-          <span className="rounded-full bg-background/60 px-2.5 py-1 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground ring-1 ring-inset ring-border/70">
-            {t.operationalStatus[selection.operationalStatus]}
-          </span>
+          {linkedIncident ? (
+            <PhaseBadge phase={linkedIncident.phase} sourceLabel={linkedIncident.phaseLabel} />
+          ) : (
+            <span className="rounded-full bg-background/60 px-2.5 py-1 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground ring-1 ring-inset ring-border/70">
+              {t.operationalStatus[selection.operationalStatus]}
+            </span>
+          )}
         </div>
-        {selection.operationalStatus === "unknown" && (
+        {!linkedIncident && selection.operationalStatus === "unknown" && (
           <p className="mt-2 text-xs leading-5 text-foreground/65">{t.fireDetail.operationalUnknownNote}</p>
         )}
+        <DetectionOperationalDetails view={operational} onSelectIncident={onSelectIncident} />
       </section>
 
       <section aria-labelledby="satellite-observation-title" className="rounded-xl bg-red-500/8 p-3.5 ring-1 ring-inset ring-red-500/25">

@@ -39,11 +39,14 @@ export type RadiativeIntensityBand = "low" | "moderate" | "high" | "very_high";
 /** Detection confidence as the source reports it. VIIRS publishes categories, not percentages. */
 export type DetectionConfidence = "low" | "nominal" | "high";
 
-/** Kinds of observation the model can hold. Only satellite detections are ingested today. */
-export type ObservationKind = "satellite_thermal_detection";
+/**
+ * Kinds of observation the model can hold: heat seen by a satellite, and an
+ * occurrence as an operational authority records it.
+ */
+export type ObservationKind = "satellite_thermal_detection" | "operational_incident_report";
 
 /** Stable identifier of an upstream dataset; observations reference it instead of repeating provenance. */
-export type DatasetId = "nasa-firms:viirs-snpp-nrt";
+export type DatasetId = "nasa-firms:viirs-snpp-nrt" | "anepc:ocorrencias-em-aberto";
 
 /** Who produced a dataset and how it may be credited. Shared by every observation from it. */
 export interface DatasetProvenance {
@@ -83,6 +86,49 @@ export interface ThermalDetection {
   intensityBand: RadiativeIntensityBand;
   /** Inferred by WildfireWatch from coordinates; null outside any land boundary. */
   country: string | null;
+}
+
+/**
+ * Phase of an official occurrence, as the operational authority groups it.
+ * WildfireWatch never derives a phase; it only maps the source's own labels.
+ * "other" keeps a label the mapping does not recognise, shown verbatim.
+ */
+export type OperationalPhase = "dispatch" | "in_progress" | "resolving" | "concluding" | "surveillance" | "other";
+
+/** Resources an authority reports as committed to an occurrence; null when it gives no count. */
+export interface OperationalResources {
+  personnel: number | null;
+  groundVehicles: number | null;
+  aircraft: number | null;
+}
+
+/**
+ * A rural-fire occurrence as an operational authority records it (ANEPC, in
+ * mainland Portugal). Everything here is reported by the authority; its
+ * location is where the occurrence was registered, often the nearest
+ * locality, not a fire perimeter.
+ */
+export interface OperationalIncident {
+  kind: "operational_incident";
+  /** WildfireWatch identifier: the dataset prefix and the source's occurrence number. */
+  id: string;
+  datasetId: DatasetId;
+  /** The authority's own occurrence number. */
+  sourceId: string;
+  location: GeoPoint;
+  phase: OperationalPhase;
+  /** The phase exactly as the source words it (Portuguese). */
+  phaseLabel: string;
+  /** Nature code and label, e.g. 3101 "Povoamento Florestal". */
+  natureCode: string;
+  natureLabel: string | null;
+  /** When the occurrence started, ISO 8601 UTC. */
+  startedAt: string;
+  /** When the source last published this occurrence's state, if it says. */
+  updatedAt: string | null;
+  municipality: string | null;
+  parish: string | null;
+  resources: OperationalResources;
 }
 
 /** Provenance of the snapshot the browser is showing. */

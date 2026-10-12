@@ -9,6 +9,11 @@ export const NAMED_DETECTIONS = [
   { id: "e2e-arganil", lat: 40.2183, lng: -8.0541, frpMw: 912.4, confidencePct: 90, scanKm: 0.52, trackKm: 0.43 },
   { id: "e2e-monchique", lat: 37.3172, lng: -8.5554, frpMw: 640.2, confidencePct: 65, scanKm: 0.39, trackKm: 0.36 },
   { id: "e2e-madeira", lat: 32.7401, lng: -17.0021, frpMw: 402.8, confidencePct: 90 },
+  // 2.6 km from the Arganil occurrence (operational-feed.ts): a second detection
+  // linked to it, far enough from the registered place to show the location note.
+  { id: "e2e-arganil-flank", lat: 40.2, lng: -8.0541, frpMw: 210.5, confidencePct: 90 },
+  // No occurrence within 5 km: a detection the operational source says nothing about.
+  { id: "e2e-viseu", lat: 40.6566, lng: -7.9125, frpMw: 188.3, confidencePct: 65 },
 ];
 
 function grid(count) {

@@ -1,4 +1,4 @@
-import type { IngestAlert, IngestAlertEvent } from "./ingest-alerts";
+import type { AlertSource, IngestAlert, IngestAlertEvent } from "./ingest-alerts";
 
 /**
  * Optional operator notification channels. Each is configured by Worker
@@ -29,12 +29,22 @@ const DISCORD_HOSTS = new Set(["discord.com", "discordapp.com", "ptb.discord.com
 const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{30,}$/;
 const TELEGRAM_CHAT_PATTERN = /^(?:-?\d{1,20}|@[A-Za-z0-9_]{5,32})$/;
 
-const EVENT_TITLES: Record<IngestAlertEvent, string> = {
-  ingest_failing: "FIRMS refresh failing",
-  snapshot_stale: "Map data is stale",
-  ingest_stalled: "FIRMS refresh not running",
-  recovered: "FIRMS refresh recovered",
+const EVENT_TITLES: Record<AlertSource, Record<IngestAlertEvent, string>> = {
+  firms: {
+    ingest_failing: "FIRMS refresh failing",
+    snapshot_stale: "Map data is stale",
+    ingest_stalled: "FIRMS refresh not running",
+    recovered: "FIRMS refresh recovered",
+  },
+  anepc: {
+    ingest_failing: "ANEPC refresh failing",
+    snapshot_stale: "Operational data is stale",
+    ingest_stalled: "ANEPC refresh not running",
+    recovered: "ANEPC refresh recovered",
+  },
 };
+
+const KEPT_LABEL: Record<AlertSource, string> = { firms: "Selected points", anepc: "Incidents kept" };
 
 /** Accepts only an https Discord webhook URL, so a misconfigured secret cannot send data elsewhere. */
 export function parseDiscordWebhookUrl(value: string | undefined): URL | null {
@@ -100,7 +110,7 @@ function formatUtc(iso: string | null): string {
 /** Plain text built only from typed fields; nothing from an upstream response is copied in. */
 export function formatAlertText(alert: IngestAlert): string {
   const lines = [
-    `WildfireWatch · ${EVENT_TITLES[alert.event]}`,
+    `WildfireWatch · ${EVENT_TITLES[alert.source][alert.event]}`,
     `Detected: ${formatUtc(alert.detectedAt)}`,
     `Last attempt: ${formatUtc(alert.lastAttemptAt)}${alert.outcome ? ` (${alert.outcome})` : ""}`,
   ];
@@ -109,16 +119,20 @@ export function formatAlertText(alert: IngestAlert): string {
   lines.push(`Data age: ${formatAge(alert.snapshotAgeMs)}`);
   if (alert.sourceRows !== null || alert.selectedPoints !== null) {
     lines.push(`Source rows: ${alert.sourceRows === null ? "n/a" : NUMBER_FORMAT.format(alert.sourceRows)}`
-      + ` · Selected points: ${alert.selectedPoints === null ? "n/a" : NUMBER_FORMAT.format(alert.selectedPoints)}`);
+      + ` · ${KEPT_LABEL[alert.source]}: ${alert.selectedPoints === null ? "n/a" : NUMBER_FORMAT.format(alert.selectedPoints)}`);
   }
   return lines.join("\n");
 }
 
-/** Sends every alert to every configured channel. Never throws. */
+/** Sends every alert to every configured channel, as one message. Never throws. */
 export async function deliverAlerts(alerts: IngestAlert[], channels: AlertChannel[]): Promise<AlertDelivery[]> {
-  if (alerts.length === 0 || channels.length === 0) return [];
-  const text = alerts.map(formatAlertText).join("\n\n");
+  if (alerts.length === 0) return [];
+  return deliverText(alerts.map(formatAlertText).join("\n\n"), channels);
+}
 
+/** Sends one message, built only from typed fields, to every configured channel. Never throws. */
+export async function deliverText(text: string, channels: AlertChannel[]): Promise<AlertDelivery[]> {
+  if (channels.length === 0) return [];
   return Promise.all(channels.map(async (channel): Promise<AlertDelivery> => {
     try {
       const response = await channel.send(text, AbortSignal.timeout(ALERT_TIMEOUT_MS));

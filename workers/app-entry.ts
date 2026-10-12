@@ -3,10 +3,11 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore generated deployment artifact
 import openNextWorker from "../.open-next/worker.js";
-import { refreshFirmsCache, type FirmsIngestEnv } from "./firms-ingest";
+import { runScheduled, type ScheduledEnv, type ScheduledSummary } from "./scheduled";
 import { createAlertChannels, type AlertChannelEnv } from "../src/lib/monitoring/alert-channels";
+import type { IngestHealthRecord } from "../src/lib/wildfire/ingest-health";
 
-interface AppEnv extends FirmsIngestEnv, AlertChannelEnv {
+interface AppEnv extends ScheduledEnv, AlertChannelEnv {
   ASSETS: unknown;
 }
 
@@ -14,23 +15,33 @@ interface WorkerExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 
-async function scheduledRefresh(env: AppEnv): Promise<void> {
-  const report = await refreshFirmsCache(env, { channels: createAlertChannels(env) });
-  const { health } = report;
-  const summary = {
+interface ScheduledController {
+  cron: string;
+}
+
+/** Operational fields only; never upstream text, URLs or keys. */
+function describe(health: IngestHealthRecord | undefined) {
+  if (!health) return null;
+  return {
     outcome: health.outcome,
     errorCode: health.errorCode ?? null,
     consecutiveFailures: health.consecutiveFailures,
     sourceRows: health.sourceRows ?? null,
     selectedPoints: health.selectedPoints ?? null,
-    alerts: report.alerts.map((alert) => alert.event),
-    deliveries: report.deliveries.map((delivery) => `${delivery.channel}:${delivery.delivered ? "ok" : delivery.detail}`),
   };
-  if (health.outcome === "failure") {
-    console.error("FIRMS scheduled refresh failed; the last known-good snapshot was kept", summary);
-  } else {
-    console.log("FIRMS scheduled refresh succeeded", summary);
-  }
+}
+
+function logSummary(cron: string, summary: ScheduledSummary): void {
+  const entry = {
+    cron,
+    firms: describe(summary.firms?.health),
+    anepc: describe(summary.anepc?.health),
+    alerts: [...(summary.firms?.alerts ?? []), ...(summary.anepc?.alerts ?? [])].map((alert) => `${alert.source}:${alert.event}`),
+    digestSent: summary.digestSent,
+  };
+  const failed = summary.firms?.health.outcome === "failure" || summary.anepc?.health.outcome === "failure";
+  if (failed) console.error("Scheduled refresh had a failure; the last known-good snapshots were kept", entry);
+  else console.log("Scheduled refresh succeeded", entry);
 }
 
 const appWorker = {
@@ -38,11 +49,15 @@ const appWorker = {
     return openNextWorker.fetch(request, env, ctx);
   },
 
-  scheduled(_controller: unknown, env: AppEnv, ctx: WorkerExecutionContext): void {
-    ctx.waitUntil(scheduledRefresh(env).catch((error: unknown) => {
-      // Only the error name: messages from fetch failures can include the FIRMS URL and key.
-      console.error("FIRMS scheduled refresh crashed", error instanceof Error ? error.name : "unknown");
-    }));
+  scheduled(controller: ScheduledController, env: AppEnv, ctx: WorkerExecutionContext): void {
+    ctx.waitUntil(
+      runScheduled(controller.cron, env, { channels: createAlertChannels(env) })
+        .then((summary) => logSummary(controller.cron, summary))
+        .catch((error: unknown) => {
+          // Only the error name: messages from fetch failures can include the FIRMS URL and key.
+          console.error("Scheduled refresh crashed", error instanceof Error ? error.name : "unknown");
+        }),
+    );
   },
 };
 

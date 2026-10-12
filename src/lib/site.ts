@@ -14,8 +14,8 @@ export const SITE = {
   contactUrl: "https://github.com/WhiteBlindness/wildfire-watch/issues",
   maintainer: "WhiteBlindness",
   /** Shown as DD/MM/YYYY on every legal page; ISO for the <time> element. */
-  legalLastUpdated: "03/10/2026",
-  legalLastUpdatedIso: "2026-10-03",
+  legalLastUpdated: "12/10/2026",
+  legalLastUpdatedIso: "2026-10-12",
 } as const;
 
 export const LEGAL_ROUTES = {

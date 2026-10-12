@@ -3,6 +3,7 @@ import pt from "../src/lib/i18n/pt";
 import { STYLE_WATER_COLOUR } from "./support/basemap-style";
 import { countColour, countWarm, decodePng } from "./support/png";
 import { SATELLITE_TILE_COLOUR, stubThirdParties, watchCspViolations } from "./support/stubs";
+import { waitForServer } from "./support/server";
 
 // Pixel checks on the WebGL canvas. They prove that MapLibre actually drew:
 // its worker loaded and tiled the GeoJSON sources, the raster imagery
@@ -18,6 +19,8 @@ const MAP_AREA = { x: 180, y: 110, width: 640, height: 460 };
 
 let cspViolations: string[] = [];
 let runtimeErrors: string[] = [];
+
+test.beforeEach(async ({ request }, testInfo) => waitForServer(request, testInfo));
 
 test.beforeEach(async ({ page }) => {
   runtimeErrors = [];

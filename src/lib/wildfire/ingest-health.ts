@@ -38,6 +38,26 @@ export interface IngestAlertState {
   stalledNotifiedAt?: string;
 }
 
+/**
+ * Non-urgent counters for the daily operations summary, kept in the health
+ * record (which every run already writes) since the last summary.
+ */
+export interface IngestSignals {
+  /** Start of the window these counters cover. */
+  since: string;
+  failedAttempts: number;
+  /** Outages that ended before the failure alert threshold. */
+  recoveredBeforeAlert: number;
+  /** The most records dropped as unreadable in a single run (not a sum: one bad record is read on every run). */
+  invalidRecords: number;
+  /** Responses that said more records existed than were returned. */
+  truncatedResponses: number;
+  /** Source labels the parser did not recognise, a sign the source changed. */
+  unrecognisedPhases: string[];
+  /** Upstream responses slower than the slow-fetch threshold. */
+  slowAttempts: number;
+}
+
 export interface IngestHealthRecord extends IngestCounts {
   version: 2;
   /** Start of the latest ingest attempt. */
@@ -50,10 +70,11 @@ export interface IngestHealthRecord extends IngestCounts {
   /** Start of the latest successful attempt, i.e. when the shown data was retrieved. */
   lastSuccessAt: string | null;
   alerts?: IngestAlertState;
+  signals?: IngestSignals;
 }
 
-/** What /api/fires exposes: the record without internal alert bookkeeping. */
-export type PublicIngestHealth = Omit<IngestHealthRecord, "alerts">;
+/** What the API routes expose: the record without internal alert and summary bookkeeping. */
+export type PublicIngestHealth = Omit<IngestHealthRecord, "alerts" | "signals">;
 
 export interface IngestAttempt extends IngestCounts {
   attemptedAt: string;
@@ -100,6 +121,27 @@ function readAlerts(value: unknown): IngestAlertState | undefined | null {
   return alerts;
 }
 
+const SIGNAL_COUNT_KEYS = ["failedAttempts", "recoveredBeforeAlert", "invalidRecords", "truncatedResponses", "slowAttempts"] as const;
+
+function readSignals(value: unknown): IngestSignals | undefined | null {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object") return null;
+  const source = value as Record<string, unknown>;
+  if (!isTimestamp(source.since)) return null;
+  if (!SIGNAL_COUNT_KEYS.every((key) => isCount(source[key]))) return null;
+  const phases = source.unrecognisedPhases;
+  if (!Array.isArray(phases) || phases.length > 10 || !phases.every((phase) => typeof phase === "string" && phase.length <= 80)) return null;
+  return {
+    since: source.since,
+    failedAttempts: source.failedAttempts as number,
+    recoveredBeforeAlert: source.recoveredBeforeAlert as number,
+    invalidRecords: source.invalidRecords as number,
+    truncatedResponses: source.truncatedResponses as number,
+    unrecognisedPhases: [...phases] as string[],
+    slowAttempts: source.slowAttempts as number,
+  };
+}
+
 /**
  * Parses a stored or transmitted health record. Accepts the current format and
  * the earlier one (no version, no failure counter), and returns null for
@@ -115,7 +157,8 @@ export function parseIngestHealth(raw: unknown): IngestHealthRecord | null {
   const errorCode = readErrorCode(source.errorCode);
   const counts = readCounts(source);
   const alerts = readAlerts(source.alerts);
-  if (errorCode === null || counts === null || alerts === null) return null;
+  const signals = readSignals(source.signals);
+  if (errorCode === null || counts === null || alerts === null || signals === null) return null;
 
   const outcome = source.outcome;
   let consecutiveFailures: number;
@@ -144,10 +187,11 @@ export function parseIngestHealth(raw: unknown): IngestHealthRecord | null {
     lastSuccessAt,
     ...counts,
     ...(alerts ? { alerts } : {}),
+    ...(signals ? { signals } : {}),
   };
 }
 
-/** Folds one attempt into the running record. Alert state is carried over; the alert planner owns it. */
+/** Folds one attempt into the running record. Alert state and signals are carried over; their planners own them. */
 export function nextIngestHealth(previous: IngestHealthRecord | null, attempt: IngestAttempt): IngestHealthRecord {
   const { attemptedAt, outcome, errorCode, ...counts } = attempt;
   const succeeded = outcome === "success";
@@ -160,11 +204,13 @@ export function nextIngestHealth(previous: IngestHealthRecord | null, attempt: I
     lastSuccessAt: succeeded ? attemptedAt : previous?.lastSuccessAt ?? null,
     ...counts,
     ...(previous?.alerts ? { alerts: previous.alerts } : {}),
+    ...(previous?.signals ? { signals: previous.signals } : {}),
   };
 }
 
 export function toPublicIngestHealth(record: IngestHealthRecord): PublicIngestHealth {
-  const { alerts: _internal, ...publicRecord } = record;
-  void _internal;
+  const { alerts: _alerts, signals: _signals, ...publicRecord } = record;
+  void _alerts;
+  void _signals;
   return publicRecord;
 }

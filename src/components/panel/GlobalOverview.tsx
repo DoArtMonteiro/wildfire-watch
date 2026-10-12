@@ -11,6 +11,7 @@ import { formatDateTime, formatDecimal, formatRelative, formatShortUtcTime } fro
 import { useLocale } from "@/lib/i18n/LocaleProvider";
 import type { Dictionary, Locale } from "@/lib/i18n/types";
 import PanelFooter from "./PanelFooter";
+import OperationalSourceCard from "@/components/operational/OperationalSourceCard";
 
 const STRONGEST_DETECTION_LIMIT = 5;
 
@@ -20,6 +21,7 @@ interface GlobalOverviewProps {
   selectedCountry: string;
   onCountryChange: (country: string) => void;
   onSelectDetection: (detection: ThermalDetection) => void;
+  onSelectIncident: (incidentId: string) => void;
   feedSnapshot: DetectionFeedSnapshot | null;
   feedState: FeedLoadStatus;
 }
@@ -30,6 +32,7 @@ export default function GlobalOverview({
   selectedCountry,
   onCountryChange,
   onSelectDetection,
+  onSelectIncident,
   feedSnapshot,
   feedState,
 }: GlobalOverviewProps) {
@@ -106,6 +109,8 @@ export default function GlobalOverview({
           </dl>
         )}
       </section>
+
+      <OperationalSourceCard onSelectIncident={onSelectIncident} />
 
       <label className="block">
         <span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.06em] text-foreground/65">

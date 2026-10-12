@@ -3,6 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import en from "../src/lib/i18n/en";
 import pt from "../src/lib/i18n/pt";
 import { stubThirdParties, watchCspViolations } from "./support/stubs";
+import { waitForServer } from "./support/server";
 
 // Chromium without WebGL2, as on an old or GPU-blocklisted device: MapLibre 6
 // cannot create its rendering context. The map area must say so, without
@@ -15,6 +16,8 @@ let cspViolations: string[] = [];
 let runtimeErrors: string[] = [];
 /** Console errors a test causes on purpose, unrelated to the map renderer. */
 let expectedConsoleErrors: RegExp[] = [];
+
+test.beforeEach(async ({ request }, testInfo) => waitForServer(request, testInfo));
 
 test.beforeEach(async ({ page }) => {
   runtimeErrors = [];

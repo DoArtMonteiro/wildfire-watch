@@ -1,14 +1,14 @@
 # WildfireWatch
 
-A full-screen map of global wildfire activity, updated hourly from NASA FIRMS satellite detections.
+A full-screen map of global wildfire activity, updated hourly from NASA FIRMS satellite detections, with the official rural-fire occurrences of Portugal's civil protection authority (ANEPC) beside them for mainland Portugal.
 
 **Live:** https://wildfire-watch.duartemonteiro.workers.dev
 
 **Status:** Live, deployed from `main` by GitHub Actions.
 
-Select any detection on the map, or pick one from the panel's keyboard-accessible list of the most intense detections, to see what the satellite measured (radiative power, acquisition time, the source's confidence), where the data came from, a labelled burned-area estimate, model weather, the nearest air-quality reading and related news. The overview always says whether the data is current, the last refresh failed, or the snapshot is out of date. Interface in European Portuguese and English, dark by default.
+Select any detection on the map, or pick one from the panel's keyboard-accessible list of the most intense detections, to see what the satellite measured (radiative power, acquisition time, the source's confidence), where the data came from, a labelled burned-area estimate, model weather, the nearest air-quality reading and related news. In mainland Portugal the detection also says whether an open ANEPC occurrence lies nearby and, if so, its phase and the resources deployed. Each source shows its own state: current, refresh failing, out of date or unavailable. Interface in European Portuguese and English, dark by default.
 
-WildfireWatch is an unofficial portfolio project. Satellite detections arrive a few hours late, not every thermal anomaly is a wildfire, a satellite cannot tell whether a fire is active, contained or out, and every area or air-quality figure is an estimate. In an emergency, call 112.
+WildfireWatch is an unofficial portfolio project. Satellite detections arrive a few hours late, not every thermal anomaly is a wildfire, and a satellite cannot tell whether a fire is active, contained or out. The phase shown for a Portuguese occurrence is what ANEPC reports, a few minutes behind, linked to detections by fixed distance and time rules. Every area or air-quality figure is an estimate. In an emergency, call 112.
 
 ## Motivation
 
@@ -22,9 +22,11 @@ This is also a portfolio project. The goal is a working product that uses real d
 
 **The global feed is too big for a browser.** FIRMS returns every thermal anomaly on Earth for the requested window, which can create a multi-megabyte payload full of redundant points. Simple truncation can drop whole regions. Sorting by intensity alone would let agricultural burns in Africa crowd out other detections. Instead, the Worker keeps every detection in Portugal, reserves part of the budget for the highest radiative power worldwide, and fills the rest round-robin over a 2° grid so no continent goes dark.
 
-**Satellites report heat, not fires.** FIRMS provides hot pixels, while people look for incidents. Calling a pixel an "active fire" with a "severity" claims more than the data supports. The model keeps observations (what VIIRS measured), derived values (what WildfireWatch computes, labelled as estimates) and operational status (which only an authority can report, so it is "unknown" here) apart. The map clusters detections only for display, and at detail zoom draws each one as its real sensor pixel, not as a perimeter.
+**Satellites report heat, not fires.** FIRMS provides hot pixels, while people look for incidents. Calling a pixel an "active fire" with a "severity" claims more than the data supports. The model keeps observations (what VIIRS measured), derived values (what WildfireWatch computes, labelled as estimates) and operational status (which only an authority can report) apart. The map clusters detections only for display, and at detail zoom draws each one as its real sensor pixel, not as a perimeter.
 
-**A recent snapshot is not the same as current data.** If the 13:00 refresh succeeded and the 13:05 one failed, a visitor at 13:10 should not be told the data is current. Snapshot freshness and ingest health are tracked separately, the panel combines them honestly, and repeated failures can notify the maintainer on Discord or Telegram.
+**Two sources disagree in useful ways.** A satellite can see heat before anyone reports a fire, an occurrence can be registered before a satellite passes over it, and the registered place is often the nearest village rather than the fire front. WildfireWatch never merges the two: each keeps its own record, and fixed rules only link them (within 5 km, acquired no more than 6 hours before the occurrence started, and linked to neither when two occurrences are about as close). Every outcome has its own wording: linked, linked but some kilometres from the registered place, between two occurrences, no occurrence linked, outside the official source's coverage, not yet compared, or official data unavailable.
+
+**A recent snapshot is not the same as current data.** If the 13:00 refresh succeeded and the 13:05 one failed, a visitor at 13:10 should not be told the data is current. Snapshot freshness and ingest health are tracked separately for each source, the panel combines them honestly, and one source failing never hides the other. Repeated failures notify the maintainer on Telegram (or Discord); a short daily summary is sent only when there is something worth reading.
 
 **A page load must never wait on NASA.** The upstream API is slow and rate-limited. An hourly Worker cron decouples them: ingestion writes a processed payload to KV, requests only ever read KV. Users never feel the upstream latency, and the map key is never exposed.
 
@@ -36,17 +38,23 @@ This is also a portfolio project. The goal is a working product that uses real d
 
 Wildfire data sources differ in field names, units, confidence scales, update frequency, and geographic coverage. Without an adapter layer, the interface tends to depend on whichever feed it started with.
 
-Here every source is mapped into one normalized model (`src/lib/wildfire/types.ts`) before it reaches a component, and every observation keeps a reference to its dataset's provenance. The map and panel never parse a provider format. Adding EFFIS or the Portuguese civil protection feed means writing an adapter and a reconciliation step, not touching the UI.
+Here every source is mapped into one normalized model (`src/lib/wildfire/types.ts`) before it reaches a component, and every record keeps a reference to its dataset's provenance. The map and panel never parse a provider format.
 
 ```
-NASA FIRMS CSV ──┐
-EFFIS (planned) ─┼─→ adapter ─→ observations + provenance ─→ map / panel
-ANEPC (planned) ─┘                    (+ feed health)
+NASA FIRMS CSV ──→ FIRMS adapter ──→ thermal observations ──┐
+  (hourly)                            (what VIIRS measured)  │
+                                                             ├─→ reconciliation ──→ links + evidence ──→ map / panel
+ANEPC ArcGIS JSON ─→ ANEPC adapter ─→ operational incidents ─┘   (fixed rules,       (per detection,      (each source with
+  (every 15 min)                      (what ANEPC reports)        no merging)          per incident)        its own health)
 ```
+
+The reconciliation runs on the server after each ANEPC refresh and is stored with the occurrence snapshot, so the browser receives the result, not either source's raw feed. EFFIS was evaluated and left out: its active-fire layers republish FIRMS, and its burnt-area service was too unreliable in 2026 to add without making the map worse.
 
 ## How the data flows
 
 A Cloudflare Worker cron job runs hourly (`workers/firms-ingest.ts`), streams the last three days of VIIRS thermal anomalies for the whole world, and writes a processed snapshot to KV, with an ingest-health record beside it. A snapshot is replaced only by a complete worldwide feed; any failure keeps the last known-good one. The app reads from KV, so a page load never waits on NASA.
+
+A second schedule reads ANEPC's open occurrences every 15 minutes (`workers/anepc-ingest.ts`), keeps the rural fires, links them to the detections in mainland Portugal and stores the result under its own KV keys. `/api/incidents` serves it to the browser.
 
 The raw global feed is far larger than a browser should receive, so ingestion samples it: up to 15,000 points, every detection in Portugal, 1,500 slots for the highest radiative power, and a round-robin over 2° cells for the rest. Overview figures describe this sample, and the panel says so.
 
@@ -114,4 +122,4 @@ Legal copy lives in `src/lib/legal/` in both languages; the operator's identity 
 
 ## Status
 
-The live adapter uses FIRMS. EFFIS and ANEPC adapters are planned; the model already keeps operational status apart from satellite observations so that a second source can add it without overwriting what FIRMS measured.
+FIRMS is live. The ANEPC source is built, tested against synthetic data in CI and checked against the live layer (see [docs/operations.md](docs/operations.md#live-validation-12102026)); it ships with the next deploy from `main`. EFFIS was evaluated and is not integrated.

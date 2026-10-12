@@ -8,6 +8,7 @@ import Legend from "@/components/map/Legend";
 import MapLoadingState from "@/components/map/MapLoadingState";
 import MapUnavailableNotice from "@/components/map/MapUnavailableNotice";
 import SidePanel from "@/components/panel/SidePanel";
+import { OperationalFeedProvider } from "@/components/operational/OperationalFeedProvider";
 import { fetchDetectionSnapshot } from "@/lib/wildfire/firms-adapter";
 import { detectionToSelection } from "@/lib/wildfire/selection";
 import { useLocale } from "@/lib/i18n/LocaleProvider";
@@ -47,6 +48,7 @@ export default function HomeClient() {
   const [feedRetryNonce, setFeedRetryNonce] = useState(0);
   const [mapStatus, setMapStatus] = useState<MapStatus>("loading");
   const [selection, setSelection] = useState<DetectionSelection | null>(null);
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [isPanelMinimized, setIsPanelMinimized] = useState(true);
   const [selectedCountry, setSelectedCountry] = useState("global");
   const [basemapMode, setBasemapMode] = useState<BasemapMode>("satellite");
@@ -112,7 +114,7 @@ export default function HomeClient() {
   const mapTheme = resolvedTheme === "light" ? "light" : "dark";
   const isMapUnavailable = mapStatus === "unavailable";
   const isInitialLoading = mapStatus === "loading" || (feedState === "loading" && !feedSnapshot);
-  const panelState = selection
+  const panelState = selection || selectedIncidentId
     ? "detail-expanded"
     : isPanelMinimized
       ? "minimized"
@@ -130,7 +132,15 @@ export default function HomeClient() {
 
   function handleMapSelect(next: DetectionSelection | null): void {
     setSelection(next);
+    setSelectedIncidentId(null);
     if (next) setIsPanelMinimized(false);
+  }
+
+  // An official occurrence, from the overview list, a detection's details or the map.
+  function handleIncidentSelect(incidentId: string): void {
+    setSelection(null);
+    setSelectedIncidentId(incidentId);
+    setIsPanelMinimized(false);
   }
 
   // Keyboard and screen-reader route to a detection that bypasses the canvas.
@@ -141,6 +151,7 @@ export default function HomeClient() {
   function handleCountryChange(country: string): void {
     setSelectedCountry(country);
     setSelection(null);
+    setSelectedIncidentId(null);
     setIsPanelMinimized(false);
   }
 
@@ -149,12 +160,15 @@ export default function HomeClient() {
     setFeedRetryNonce((value) => value + 1);
   }
 
+  const detailOpen = selection !== null || selectedIncidentId !== null;
+
   return (
+    <OperationalFeedProvider>
     <main
       className="wildfire-watch relative h-dvh w-full overflow-hidden"
-      data-map-panel-open={selection || !isPanelMinimized ? "true" : "false"}
+      data-map-panel-open={detailOpen || !isPanelMinimized ? "true" : "false"}
       data-map-panel-state={panelState}
-      data-map-panel-view={selection ? "detail" : "global"}
+      data-map-panel-view={detailOpen ? "detail" : "global"}
       data-map-panel-minimized={isPanelMinimized ? "true" : "false"}
       data-basemap-mode={basemapMode}
     >
@@ -177,6 +191,8 @@ export default function HomeClient() {
           allDetections={detections}
           selection={selection}
           onSelect={handleMapSelect}
+          selectedIncidentId={selectedIncidentId}
+          onSelectIncident={handleIncidentSelect}
           onMapLoad={handleMapLoad}
           onRendererUnavailable={handleMapUnavailable}
           theme={mapTheme}
@@ -239,6 +255,8 @@ export default function HomeClient() {
       <SidePanel
         detections={scopedDetections}
         selection={selection}
+        selectedIncidentId={selectedIncidentId}
+        onSelectIncident={handleIncidentSelect}
         isMinimized={isPanelMinimized}
         onClose={() => handleMapSelect(null)}
         onToggleMinimized={() => setIsPanelMinimized((current) => !current)}
@@ -250,5 +268,6 @@ export default function HomeClient() {
         feedState={feedState}
       />
     </main>
+    </OperationalFeedProvider>
   );
 }

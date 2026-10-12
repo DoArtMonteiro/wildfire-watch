@@ -129,3 +129,42 @@ test("posts one message per run to each channel", async () => {
   assert.deepEqual(deliveries, [{ channel: "discord", delivered: true, detail: "HTTP 204" }]);
   assert.equal(sent.length, 1);
 });
+
+test("each source has its own thresholds and names itself in the alert", async () => {
+  const { ANEPC_ALERT_POLICY } = await import("./ingest-alerts");
+  const QUARTER = 15 * 60 * 1_000;
+  let record: IngestHealthRecord | null = nextIngestHealth(null, { attemptedAt: iso(T0), outcome: "success", sourceRows: 40, selectedPoints: 6 });
+  const events: string[][] = [];
+  for (let run = 1; run <= 5; run += 1) {
+    const recorded = nextIngestHealth(record, { attemptedAt: iso(T0 + run * QUARTER), outcome: "failure", errorCode: "network" });
+    const plan = planIngestAlerts(recorded, T0 + run * QUARTER, ANEPC_ALERT_POLICY);
+    events.push(plan.alerts.map((alert) => `${alert.source}:${alert.event}`));
+    const { alerts: _stored, ...rest } = recorded;
+    void _stored;
+    record = plan.alertState ? { ...rest, alerts: plan.alertState } : rest;
+  }
+  // Runs every 15 minutes: four failures in a row (an hour) before alerting.
+  assert.deepEqual(events, [[], [], [], ["anepc:ingest_failing"], []]);
+
+  // Four failures in a row with no alert sent yet: the planner raises one, worded for ANEPC.
+  let failing: IngestHealthRecord | null = null;
+  for (let run = 0; run < 4; run += 1) {
+    failing = nextIngestHealth(failing, { attemptedAt: iso(T0 + run * QUARTER), outcome: "failure", errorCode: "parse_error" });
+  }
+  const [alert] = planIngestAlerts(failing!, T0 + 3 * QUARTER, ANEPC_ALERT_POLICY).alerts;
+  assert.ok(alert);
+  const text = formatAlertText(alert);
+  assert.match(text, /ANEPC refresh failing/);
+  assert.match(text, /Error code: parse_error/);
+  assert.doesNotMatch(text, /FIRMS/);
+
+  const stalled = planStallAlert(nextIngestHealth(null, { attemptedAt: iso(T0), outcome: "success" }), T0 + 70 * 60 * 1_000, ANEPC_ALERT_POLICY);
+  assert.deepEqual(stalled.alerts.map((entry) => `${entry.source}:${entry.event}`), ["anepc:ingest_stalled"]);
+  assert.match(formatAlertText(stalled.alerts[0]), /ANEPC refresh not running/);
+});
+
+test("FIRMS alerts keep their wording and name their source", () => {
+  const [alert] = planStallAlert(nextIngestHealth(null, { attemptedAt: iso(T0), outcome: "success" }), T0 + 3 * HOUR).alerts;
+  assert.equal(alert.source, "firms");
+  assert.match(formatAlertText(alert), /FIRMS refresh not running/);
+});

@@ -25,6 +25,11 @@ export default function Legend() {
             {t.legend[band]}
           </li>
         ))}
+        <li className="mt-1 flex items-center gap-2 border-t border-border/60 pt-1.5 font-mono text-xs text-foreground/80">
+          {/* A hollow ring, as on the map: official occurrences are a different kind of information. */}
+          <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full border-2 border-sky-700 dark:border-sky-300" />
+          {t.operational.legendLabel}
+        </li>
       </ul>
     </div>
   );

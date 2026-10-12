@@ -203,3 +203,35 @@ test("a run that finds no attempt for hours reports the stall before doing any w
   assert.deepEqual(order, ["fetch after 1 alert(s)"]);
   assert.ok(storedHealth(kv).alerts?.stalledNotifiedAt);
 });
+
+test("a successful run also stores the compact index of detections in mainland Portugal for the reconciliation", async () => {
+  const { FUSION_INDEX_KEY, readFusionIndex } = await import("../src/lib/operational/incidents-cache");
+  const { ANEPC_COVERAGE } = await import("../src/lib/operational/anepc");
+  const kv = new FakeKv();
+  const restore = withFetch(async () => new Response(worldCsv(6_000), { status: 200 }));
+  try {
+    const report = await refreshFirmsCache(env(kv), { now: () => Date.parse("2026-10-02T13:00:00.000Z") });
+    const index = readFusionIndex(JSON.parse(kv.store.get(FUSION_INDEX_KEY) ?? "null"));
+    assert.ok(index && index.observations.length > 0);
+    assert.equal(index.firmsGeneratedAt, report.payload?.generatedAt);
+    for (const { location } of index.observations) {
+      assert.ok(location.lat >= ANEPC_COVERAGE.south && location.lat <= ANEPC_COVERAGE.north && location.lng >= ANEPC_COVERAGE.west && location.lng <= ANEPC_COVERAGE.east);
+    }
+    assert.ok(storedHealth(kv).signals, "the run is counted for the daily summary");
+  } finally {
+    restore();
+  }
+});
+
+test("a failing index write never fails the FIRMS run", async () => {
+  const { FUSION_INDEX_KEY } = await import("../src/lib/operational/incidents-cache");
+  const kv = new FakeKv();
+  kv.failingKeys.add(FUSION_INDEX_KEY);
+  const restore = withFetch(async () => new Response(worldCsv(6_000), { status: 200 }));
+  try {
+    const report = await refreshFirmsCache(env(kv), { now: () => Date.parse("2026-10-02T13:00:00.000Z") });
+    assert.equal(report.health.outcome, "success");
+  } finally {
+    restore();
+  }
+});

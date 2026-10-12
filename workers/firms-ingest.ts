@@ -17,6 +17,8 @@ import {
   type IngestHealthRecord,
 } from "../src/lib/wildfire/ingest-health";
 import { planIngestAlerts, planStallAlert, type IngestAlert } from "../src/lib/monitoring/ingest-alerts";
+import { accumulateSignals, type RunObservation } from "../src/lib/monitoring/daily-digest";
+import { FUSION_INDEX_KEY, buildFusionIndex } from "../src/lib/operational/incidents-cache";
 import { deliverAlerts, type AlertChannel, type AlertDelivery } from "../src/lib/monitoring/alert-channels";
 import {
   parseCsv as parseCsvShared,
@@ -934,6 +936,14 @@ async function ingestSnapshot(env: FirmsIngestEnv, now: () => number): Promise<{
     // Most likely the free-plan daily KV write limit; the previous snapshot stays.
     throw new IngestFailure("storage_error", counts);
   }
+
+  // The ANEPC runs reconcile against these detections (those of the snapshot
+  // inside mainland Portugal: 11 on 12/10/2026, a few thousand on a severe fire
+  // day) instead of parsing the whole snapshot. Best effort: a stale index only
+  // delays reconciliation with the newest detections.
+  await env.FIRMS_CACHE.put(FUSION_INDEX_KEY, JSON.stringify(buildFusionIndex(points, generatedAt))).catch(() => {
+    console.warn("FIRMS fusion index could not be written");
+  });
   return { payload, counts };
 }
 
@@ -960,6 +970,7 @@ export async function refreshFirmsCache(env: FirmsIngestEnv, options: RefreshOpt
 
   let payload: FirmsCachePayload | null = null;
   let attempt: IngestAttempt;
+  const startedMs = Date.now();
   if (!env.FIRMS_MAP_KEY?.trim()) {
     attempt = { attemptedAt, outcome: "failure", errorCode: "configuration" };
   } else {
@@ -981,7 +992,12 @@ export async function refreshFirmsCache(env: FirmsIngestEnv, options: RefreshOpt
   const plan = planIngestAlerts(recorded, now());
   const { alerts: _previousAlerts, ...withoutAlerts } = recorded;
   void _previousAlerts;
-  const health: IngestHealthRecord = plan.alertState ? { ...withoutAlerts, alerts: plan.alertState } : withoutAlerts;
+  const observation: RunObservation = { outcome: attempt.outcome, durationMs: Date.now() - startedMs };
+  const health: IngestHealthRecord = {
+    ...withoutAlerts,
+    ...(plan.alertState ? { alerts: plan.alertState } : {}),
+    signals: accumulateSignals(previous, observation, now()),
+  };
 
   deliveries.push(...await deliverAlerts(plan.alerts, channels));
   await writeHealth(env.FIRMS_CACHE, health);

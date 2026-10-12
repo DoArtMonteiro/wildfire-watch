@@ -16,6 +16,30 @@ export const INGEST_FAILING_AFTER = 3;
  */
 export const INGEST_STALLED_AFTER_MS = 2 * 60 * 60 * 1_000;
 
+/** How long each source's data stays current, and when its refresh counts as failing or stalled. */
+export interface FeedTimingPolicy {
+  staleAfterMs: number;
+  stalledAfterMs: number;
+  failingAfter: number;
+}
+
+/** FIRMS is refreshed hourly. */
+export const FIRMS_FEED_TIMING: FeedTimingPolicy = {
+  staleAfterMs: SNAPSHOT_STALE_AFTER_MS,
+  stalledAfterMs: INGEST_STALLED_AFTER_MS,
+  failingAfter: INGEST_FAILING_AFTER,
+};
+
+/**
+ * Operational status (ANEPC) is refreshed every 15 minutes and changes
+ * quickly: after three missed runs the phase shown may no longer be true.
+ */
+export const OPERATIONAL_FEED_TIMING: FeedTimingPolicy = {
+  staleAfterMs: 45 * 60 * 1_000,
+  stalledAfterMs: 60 * 60 * 1_000,
+  failingAfter: 4,
+};
+
 /** How old the snapshot is, independent of whether refreshes are working. */
 export type SnapshotFreshness = "fresh" | "stale";
 
@@ -51,26 +75,29 @@ export interface FeedHealthInput {
   now: number;
 }
 
-function ingestStatus(ingest: IngestHealthRecord | null, generatedAtMs: number | null, now: number): IngestStatus {
+function ingestStatus(ingest: IngestHealthRecord | null, generatedAtMs: number | null, now: number, timing: FeedTimingPolicy): IngestStatus {
   if (!ingest) return "unknown";
   const attemptedAtMs = Date.parse(ingest.attemptedAt);
   // A failure recorded before the snapshot was built was followed by a success
   // whose health write did not land; the snapshot itself proves the refresh worked.
   const failureSuperseded = ingest.outcome === "failure" && generatedAtMs !== null && attemptedAtMs < generatedAtMs;
   const latestActivityMs = failureSuperseded ? generatedAtMs : attemptedAtMs;
-  if (now - latestActivityMs > INGEST_STALLED_AFTER_MS) return "stalled";
+  if (now - latestActivityMs > timing.stalledAfterMs) return "stalled";
   if (ingest.outcome === "success" || failureSuperseded) return "healthy";
-  return ingest.consecutiveFailures >= INGEST_FAILING_AFTER ? "failing" : "degraded";
+  return ingest.consecutiveFailures >= timing.failingAfter ? "failing" : "degraded";
 }
 
-export function assessFeedHealth({ snapshotGeneratedAt, ingest, loadStatus, now }: FeedHealthInput): FeedHealthAssessment {
+export function assessFeedHealth(
+  { snapshotGeneratedAt, ingest, loadStatus, now }: FeedHealthInput,
+  timing: FeedTimingPolicy = FIRMS_FEED_TIMING,
+): FeedHealthAssessment {
   const generatedAtMs = snapshotGeneratedAt ? Date.parse(snapshotGeneratedAt) : Number.NaN;
   const hasSnapshot = Number.isFinite(generatedAtMs);
   const snapshotAgeMs = hasSnapshot ? Math.max(0, now - generatedAtMs) : null;
   const freshness: SnapshotFreshness | null = snapshotAgeMs === null
     ? null
-    : snapshotAgeMs > SNAPSHOT_STALE_AFTER_MS ? "stale" : "fresh";
-  const ingestState = ingestStatus(ingest, hasSnapshot ? generatedAtMs : null, now);
+    : snapshotAgeMs > timing.staleAfterMs ? "stale" : "fresh";
+  const ingestState = ingestStatus(ingest, hasSnapshot ? generatedAtMs : null, now, timing);
 
   let state: FeedHealthAssessment["state"];
   if (!hasSnapshot) state = loadStatus === "loading" ? "loading" : "unavailable";

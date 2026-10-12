@@ -156,3 +156,21 @@ test("the public record never exposes alert bookkeeping", () => {
   assert.equal("alerts" in toPublicIngestHealth(record), false);
   assert.equal(parseIngestHealth(record)?.alerts?.failureNotifiedAt, "2026-10-02T13:05:00.000Z");
 });
+
+test("operational data has its own, shorter timing", async () => {
+  const { OPERATIONAL_FEED_TIMING } = await import("./feed-health");
+  const generated = "2026-08-12T14:00:20.000Z";
+  const ingest = success("2026-08-12T14:00:00.000Z");
+  const at = (time: string) => assessFeedHealth({ snapshotGeneratedAt: generated, ingest, loadStatus: "ready", now: T(time) }, OPERATIONAL_FEED_TIMING);
+  assert.equal(at("2026-08-12T14:40:00.000Z").state, "healthy");
+  // Three missed 15-minute runs: the phase shown may no longer be true.
+  assert.equal(at("2026-08-12T14:50:00.000Z").state, "stale");
+  assert.equal(at("2026-08-12T15:10:00.000Z").ingest, "stalled");
+  // The same age is still fresh for the hourly FIRMS snapshot.
+  assert.equal(assessFeedHealth({ snapshotGeneratedAt: generated, ingest, loadStatus: "ready", now: T("2026-08-12T14:50:00.000Z") }).state, "healthy");
+
+  let failing: IngestHealthRecord | null = success("2026-08-12T14:00:00.000Z");
+  for (const minute of ["15", "30", "45"]) failing = failure(`2026-08-12T14:${minute}:00.000Z`, failing);
+  const threeFailures = assessFeedHealth({ snapshotGeneratedAt: generated, ingest: failing, loadStatus: "ready", now: T("2026-08-12T14:46:00.000Z") }, OPERATIONAL_FEED_TIMING);
+  assert.equal(threeFailures.ingest, "degraded", "four failures in a row before 'failing'");
+});
