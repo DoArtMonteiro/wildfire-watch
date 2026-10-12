@@ -223,7 +223,7 @@ const pt: Dictionary = {
     satelliteAmbiguousOnly: "Deteções de satélite próximas: {count}. Ficam a distâncias semelhantes desta e de outra ocorrência, por isso não são associadas a nenhuma.",
     howLinkedTitle: "Como as fontes são associadas",
     howLinkedText: "Uma deteção de satélite é associada a uma ocorrência quando fica a menos de {radius} km do local registado e foi adquirida, no máximo, {window} h antes do início da ocorrência. Se duas ocorrências ficarem a distâncias semelhantes (diferença até {margin} km), a deteção não é associada a nenhuma.",
-    attribution: "Fonte: ANEPC — Autoridade Nacional de Emergência e Proteção Civil (dados.gov.pt, CC BY 4.0).",
+    attribution: "Fonte: ANEPC — Autoridade Nacional de Emergência e Proteção Civil, camada pública geoPROCIV. Conjunto de dados «ProCiv – Ocorrências em aberto», listado no dados.gov.pt sob a licença CC BY 4.0. Dados filtrados e associados pelo WildfireWatch.",
     officialDisclaimer: "Dados da ANEPC apresentados pelo WildfireWatch, que não é um canal oficial. Podem ter alguns minutos de atraso. Em caso de emergência, ligue 112 e siga as indicações da Proteção Civil.",
     legendLabel: "Ocorrência ANEPC",
   },

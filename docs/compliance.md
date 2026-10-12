@@ -1,6 +1,6 @@
 # Legal, compliance and third-party review
 
-Engineering due diligence, not legal advice. It records what WildfireWatch does about each obligation that could plausibly apply, what was checked, and what is left for the owner to decide. It does not claim that the site is fully compliant with any law, and it is not a legal certification. Last reviewed on 04/10/2026.
+Engineering due diligence, not legal advice. It records what WildfireWatch does about each obligation that could plausibly apply, what was checked, and what is left for the owner to decide. It does not claim that the site is fully compliant with any law, and it is not a legal certification. Last reviewed on 12/10/2026.
 
 **Context.** WildfireWatch is a free, non-commercial personal portfolio project operated from Portugal. It has no accounts, forms, payments, reviews, advertising or analytics. It stores two interface preferences in the visitor's browser. It is hosted on Cloudflare Workers.
 
@@ -59,23 +59,28 @@ Sources were searched on 02/10/2026. Several official sites (EUR-Lex, Diário da
 | Nominatim (OpenStreetMap) | Place names | Server | None; identifying User-Agent required | 1 request/second for the whole application; caching required | Acceptable | Throttling is per isolate, not global; rounding to 2 km and edge caching keep real traffic far below the limit. |
 | Google News RSS | Related headlines | Server | None (no official API) | Undocumented | Grey area: terms reserve the service for use through its own interface | Feeds can be blocked at any time; the panel degrades to "news unavailable". |
 | Bing News RSS (fallback) | Related headlines | Server | None | Undocumented | Grey area: Microsoft terms limit Bing content to personal, non-commercial use | Same as Google. The Bing News Search API was retired in 2025. |
-| ANEPC open occurrences (ArcGIS Online feature layer `OcorrenciasSite`) | Official rural-fire occurrences, mainland Portugal | Server (cron every 15 min) | None | Not documented; one request per run (96/day) | Acceptable for personal, non-commercial use with attribution (see below) | Not a contracted API: the feed was unavailable for months in 2024–2025 and for eight weeks in 2026, and moved host and schema in March 2026. Live reachability, fields and licence page **UNVERIFIED** from the build environment; a live check is a merge condition. |
+| ANEPC open occurrences (ArcGIS Online feature layer `OcorrenciasSite`, organisation geoPROCIV ANEPC) | Official rural-fire occurrences, mainland Portugal | Server (cron four times an hour) | None | maxRecordCount 2 000 per page; responses cached by ArcGIS for 120 s; one request per run (96/day) | Acceptable for personal, non-commercial use with attribution (see below) | Not a contracted API: unavailable for months in 2024–2025 and for eight weeks in 2026, and moved host and schema in March 2026. Checked live on 12/10/2026: fields, page size, time zones, ownership and the dados.gov.pt record. |
 | EFFIS (Copernicus) | Not used | n/a | n/a | n/a | n/a | Evaluated and left out: its active-fire layers republish NASA FIRMS; its burnt-area WFS showed hangs, 503 errors, swapped axes and very large payloads in 2026. |
 | Cloudflare Workers, KV | Hosting, storage | Server | Account | Free plan (see [operations.md](./operations.md)) | Acceptable | Workers Logs keep request data for 3 days on Free today and up to 7 days from 01/12/2026; the policy says "up to 7 days". |
 
 ## Operational data (ANEPC)
 
-Sources were searched on 04/10/2026. Every ANEPC, dados.gov.pt and SGIFR host was blocked from the research environment, so the findings below rest on search-engine summaries of the official pages and on the code of open-source projects that read the same layer. Each is marked accordingly and must be re-read on the live page before merging.
+The live layer and the dados.gov.pt record were read on 12/10/2026 from a GitHub Actions runner (the development environment's network policy blocks both hosts). The ANEPC website notice and the SGIFR terms could not be fetched there and still rest on search-engine summaries.
 
-| Regime | What it says | Applies to WildfireWatch? | Confidence |
-|---|---|---|---|
-| dados.gov.pt dataset "ProCiv – Ocorrências em aberto", published by ANEPC | Licensed CC BY 4.0: reuse, including redistribution, with credit and an indication of changes | Yes, if the layer WildfireWatch reads is that dataset's resource (likely, since the dataset is described as the feed behind the public map; **not verified**) | Medium (search summary; repeated by an independent reuser on 28/09/2026) |
-| ANEPC website legal notice | Information may be copied and used for personal or public purposes without profit or offensive purpose, citing the source | Yes: WildfireWatch is personal, non-commercial and cites ANEPC | Medium (search summary) |
-| SGIFR / SIFOR terms (`api.sgifr.gov.pt`) | No commercial use; no reproduction or publication without written consent, except information marked public; a fixed attribution string | No: WildfireWatch does not read the SGIFR host | Medium (search summary of the Portuguese text) |
+| Evidence | What it shows | How it was checked |
+|---|---|---|
+| Layer ownership | The ArcGIS item "Ocorrencias Site" behind `OcorrenciasSite` is owned by the account `ANEPCdados` of the organisation "geoPROCIV ANEPC" (`VlrHb7fn5ewYhX6y`), public access | ArcGIS item and portal records, live |
+| Layer licence | The item's licence and credits fields are empty; the layer's copyright text is empty | ArcGIS item record, live |
+| dados.gov.pt | Dataset "ProCiv - Ocorrências em aberto", organisation Autoridade Nacional de Emergência e Proteção Civil, licence `cc-by` (Creative Commons Attribution 4.0), update frequency continuous | dados.gov.pt API, live |
+| dados.gov.pt resources | The two listed resources are the earlier prociv.pt web services (last modified 2021); the ArcGIS layer is not listed as a resource | dados.gov.pt API, live |
+| ANEPC website notice | Reuse for personal or public purposes without profit, citing the source | Search summary only |
+| SGIFR / SIFOR terms | No commercial use; written consent for republication | Search summary only; WildfireWatch does not read the SGIFR host |
 
-**What WildfireWatch does.** It reads the ArcGIS Online layer, not the SGIFR gateway; keeps rural fires only; drops the street address; shows each occurrence with "Fonte: ANEPC — Autoridade Nacional de Emergência e Proteção Civil (dados.gov.pt, CC BY 4.0)", states the changes on `/sobre`, says ANEPC does not endorse the project, and labels every phase "reported by ANEPC". It stores only the current snapshot, publishes no archive and commits no raw data to the repository.
+**Conclusion.** The publisher is verified: ANEPC owns and publishes the layer. The licence is not attached to the layer itself; the CC BY 4.0 grant comes from ANEPC's own listing of the same information product ("Ocorrências em aberto") on dados.gov.pt, whose resource links predate the move to ArcGIS Online. For a personal, non-commercial site that credits ANEPC and states its changes, the CC BY listing and ANEPC's own notice point the same way. This is a reasoned engineering reading, not a legal opinion, and the site's wording says the dataset is *listed* under CC BY 4.0 rather than that the layer is licensed under it.
 
-**Residual risk.** The CC BY 4.0 listing and ANEPC's own notice point the same way for a personal, non-commercial site that credits the source. The open questions are whether this exact layer is the dataset's resource and whether the licence text still reads as summarised; both are part of the live check in [operations.md](./operations.md#before-the-first-deploy). An optional, stronger step, for the owner only, is to ask ANEPC (`geral@prociv.pt`) in writing; nothing here depends on it.
+**What WildfireWatch does.** It reads the ArcGIS Online layer, not the SGIFR gateway; asks only for the fields it uses, so the street address is never fetched; keeps rural fires only; credits ANEPC in every occurrence panel and on `/sobre`, with a link to the licence and the list of changes (filtering, no address, grouped and translated phases, times in UTC, linking to detections); says ANEPC does not endorse the project; and labels every phase "reported by ANEPC". It stores only the current snapshot, publishes no archive and commits no raw data to the repository.
+
+**Residual risk.** The licence is inferred from the dataset listing, not stated on the layer. An optional, stronger step, for the owner only, is to ask ANEPC (`geral@prociv.pt`) to confirm that the geoPROCIV layer is covered by the dados.gov.pt listing; nothing in the code depends on it.
 
 **Safety wording.** The occurrence list is not an alert channel and arrives minutes late. Every occurrence panel says that WildfireWatch is not an official channel and to call 112 and follow Civil Protection instructions in an emergency.
 

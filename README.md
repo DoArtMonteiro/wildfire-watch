@@ -122,4 +122,4 @@ Legal copy lives in `src/lib/legal/` in both languages; the operator's identity 
 
 ## Status
 
-FIRMS is live. The ANEPC source is built and tested against synthetic data; its live endpoint could not be reached from the build environment, so a live check is required before it ships (see [docs/operations.md](docs/operations.md#before-the-first-deploy)). EFFIS was evaluated and is not integrated.
+FIRMS is live. The ANEPC source is built, tested against synthetic data in CI and checked against the live layer (see [docs/operations.md](docs/operations.md#live-validation-12102026)); it ships with the next deploy from `main`. EFFIS was evaluated and is not integrated.

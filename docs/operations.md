@@ -5,19 +5,19 @@ How WildfireWatch gets its data, how it knows when that data is wrong, and how i
 ## Data flow
 
 ```
-cron "0 * * * *"            workers/scheduled.ts runs, in order, each step isolated from the others:
+cron "0 * * * *"            FIRMS only, in its own invocation
 
 NASA FIRMS ──CSV──→ refreshFirmsCache ──→ KV active-fires:v1                     snapshot, last known good
- (world, 3 days)        │                 KV active-fires:ingest-health:v1       health, alert state, daily signals
-                        │                 KV active-fires:fusion-index:v1        detections in mainland Portugal, compact
-                        │ points (in memory)
-                        ▼
-ANEPC ArcGIS ──JSON──→ refreshOperationalIncidents ──→ KV operational-incidents:v1                occurrences + reconciliation
- (open occurrences)     (parse, filter, reconcile)     KV operational-incidents:ingest-health:v1  health, alert state, daily signals
-                        ▼
-                     daily summary, due at 07:00 UTC ──→ KV operations:digest:v1
+ (world, 3 days)                          KV active-fires:ingest-health:v1       health, alert state, daily signals
+                                          KV active-fires:fusion-index:v1        detections in mainland Portugal, compact
 
-cron "15,30,45 * * * *"     refreshOperationalIncidents only, reconciling with the stored fusion index
+cron "5,20,35,50 * * * *"   ANEPC, then the daily summary when due, in their own invocation
+
+ANEPC ArcGIS ──JSON──→ refreshOperationalIncidents ──→ KV operational-incidents:v1                occurrences + reconciliation
+ (open occurrences,     (page, parse, filter,          KV operational-incidents:ingest-health:v1  health, alert state, daily signals
+  named fields)          reconcile with the index)
+                        ▼
+                     daily summary, due from 07:00 UTC ──→ KV operations:digest:v1
 
 any run ──→ Telegram / Discord (optional): failure, stall, stale data, recovery, daily summary
 
@@ -25,9 +25,9 @@ browser ──→ /api/fires ─────→ FIRMS snapshot + public health �
 browser ──→ /api/incidents ─→ occurrences + reconciliation + public health ─────────────────────────────────────┴─→ map / panel
 ```
 
-A page load never waits on NASA or ANEPC. The FIRMS snapshot is replaced only by a complete worldwide feed (at least 5 000 points across 8 longitude and 4 latitude bands); anything else is recorded as a failure and the previous snapshot stays. Each source has its own KV keys and health record, so a failing source can never overwrite another's data or hide its state.
+A page load never waits on NASA or ANEPC. The FIRMS snapshot is replaced only by a complete worldwide feed (at least 5 000 points across 8 longitude and 4 latitude bands); anything else is recorded as a failure and the previous snapshot stays. Each source has its own KV keys, health record and cron invocation, so a failing or stopped source can never overwrite another's data, hide its state or use its CPU time.
 
-The top-of-hour run reconciles ANEPC with the FIRMS points it has just processed, in memory. The quarter-hour runs read the fusion index the last successful FIRMS run stored (detections inside the ANEPC coverage box, as `[id, lat, lng, acquiredAt, frpMw]` tuples). If there is no index, the occurrences are still stored and served, marked as not reconciled.
+Every ANEPC run reads the fusion index the last successful FIRMS run stored (detections inside the ANEPC coverage box, as `[id, lat, lng, acquiredAt, frpMw]` tuples); the :05 run picks up the index written at :00. If there is no index, the occurrences are still stored and served, marked as not reconciled.
 
 ## Domain model
 
@@ -48,14 +48,16 @@ Provenance is shared, not repeated per point: each detection references a `Datas
 
 `workers/anepc-ingest.ts` and `src/lib/operational/anepc.ts`.
 
-**What it reads.** ANEPC's public layer of open occurrences, the ArcGIS feature service `OcorrenciasSite` on ArcGIS Online, which fogos.pt and other public projects also read. dados.gov.pt lists the dataset as "ProCiv – Ocorrências em aberto" under CC BY 4.0. One request returns the whole list, typically tens to a few hundred records:
+**What it reads.** ANEPC's public layer of open occurrences, the ArcGIS feature service `OcorrenciasSite`, owned by the account `ANEPCdados` of ANEPC's "geoPROCIV" organisation on ArcGIS Online (fogos.pt and other public projects read it too). ANEPC lists the information product on dados.gov.pt as "ProCiv – Ocorrências em aberto" under CC BY 4.0. Each run asks for every open occurrence, a page at a time, naming only the fields the parser reads:
 
 ```
 GET https://services-eu1.arcgis.com/VlrHb7fn5ewYhX6y/arcgis/rest/services/OcorrenciasSite/FeatureServer/0/query
-    ?where=1=1&outFields=*&returnGeometry=true&outSR=4326&f=json
+    ?where=1=1&outFields=ID_oc,Numero,EstadoAgrupado,EstadoOcorrencia,CodNatureza,Natureza,DataOcorrencia,
+     DataDosDados,Concelho,Freguesia,Operacionais,MeiosTerrestres,MeiosAereos,Latitude,Longitude
+    &returnGeometry=true&outSR=4326&orderByFields=ID_oc&resultOffset=0&resultRecordCount=2000&f=json
 ```
 
-The query asks for every field and filters locally, because the layer's field names changed when ANEPC moved it to ArcGIS Online in March 2026 and could not be checked live from the build environment. The parser accepts both known spellings. Once the live check below confirms the schema, a server-side filter (`CodNatureza LIKE '31%'`) and named fields would shrink the response; that is an optimisation, not a requirement.
+Naming the fields keeps the street address and a dozen unused fields out of the response, and makes a renamed field fail the query loudly (an ArcGIS error body, recorded as `http_error`) instead of producing empty records. The filter on rural fires stays local: the full list is small, and an empty full list is a reliable sign of a fault (see Safeguards).
 
 **What it keeps.** Rural fires only: nature codes 31xx, except 3107 (mop-up consolidation of an earlier fire), 3109 (fuel management) and 3111 (debris burning). Closed occurrences are dropped. The street address is never stored. Each occurrence keeps ANEPC's number, location, phase, nature, start and update times, municipality, parish and resources (personnel, ground vehicles, aircraft; a missing count is "not reported", never zero).
 
@@ -69,18 +71,26 @@ The query asks for every field and filters locally, because the layer's field na
 | Encerrada, Fechada | dropped | not shown |
 | anything else (for example "Chegada ao TO") | `other` | ANEPC's own label |
 
-**Safeguards.** A 20-second timeout, a 4 MiB cap on the response (checked against `Content-Length` and enforced while the body streams), an identifying `User-Agent`, and schema checks. An empty layer is `incomplete_feed`: the layer lists every kind of open occurrence (road accidents and rescues too), so an empty response is far likelier a fault than a quiet country. A response with no nature codes, or where three or more rural-fire records arrive and none is readable, is a `parse_error`; one or two unreadable records are dropped and counted. Any failure keeps the last good snapshot and records a safe error code (`network`, `http_error`, `incomplete_feed`, `parse_error`, `storage_error` or `unknown`); upstream response text is never stored or sent. A response flagged as truncated (`exceededTransferLimit`) is kept but counted for the daily summary.
+**Safeguards.** A 20-second timeout per page, a 4 MiB cap per page (checked against `Content-Length` and enforced while the body streams), an identifying `User-Agent`, and schema checks. Pages are read in `ID_oc` order while the layer reports `exceededTransferLimit`, up to five pages (10 000 open occurrences); a layer that still has more fails the run as `incomplete_feed` rather than publishing a shortened list. An empty layer is `incomplete_feed` too: the layer lists every kind of open occurrence (road accidents and rescues as well), so an empty response is far likelier a fault than a quiet country. A response with no nature codes, or where three or more rural-fire records arrive and none is readable, is a `parse_error`; one or two unreadable records are dropped and counted. Any failure keeps the last good snapshot and records a safe error code (`network`, `http_error`, `incomplete_feed`, `parse_error`, `storage_error` or `unknown`); upstream response text is never stored or sent.
+
+**Times.** The layer declares its dates in UTC. `DataOcorrencia` (the start) is UTC: its newest value was 10 minutes before the fetch, and its UTC values match the layer's own local `Data` and `Hora` fields shifted by the Lisbon offset. `DataDosDados` (the publication time, the same on every record) is not: on 12/10/2026 it was 59 minutes after the fetch, that is Lisbon summer time written as UTC. The parser reads a publication time that lies ahead of the fetch as Lisbon time, so it shows correctly in summer and winter, and a corrected upstream value (never in the future) is left as it is.
 
 **Coverage.** Mainland Portugal (the layer excludes the Azores and Madeira). A detection is compared with ANEPC only when its inferred country is Portugal and it lies inside the box 36.9–42.2° N, 9.6–6.1° W; anywhere else the panel says no operational source covers the area.
 
-### Before the first deploy
+### Live validation (12/10/2026)
 
-The endpoint, its fields and its time zone were researched from public documentation and from open-source projects that read it, but every request from the build environment was blocked. Before merging, from a machine with normal internet access:
+The development environment cannot reach ANEPC, so the checks ran on a GitHub Actions runner with read-only requests (two metadata reads and a handful of queries), printing only aggregates:
 
-1. `curl -s '<layer URL>?f=pjson' | jq '{name, maxRecordCount, copyrightText, fields: [.fields[].name]}'`: the fields include `Numero`, `EstadoAgrupado`, `DataOcorrencia`, `CodNatureza`, `Natureza`, `Concelho`, `Freguesia`, `Operacionais`, `MeiosTerrestres`, `MeiosAereos` and `DataDosDados`, and `maxRecordCount` is at least a few hundred.
-2. Run the query above and check that `features` is non-empty, that `DataOcorrencia` values are epoch milliseconds in UTC (compare one with the ANEPC website), and that the response is well under 4 MiB.
-3. Re-read the dataset page on dados.gov.pt and confirm the licence and that this layer is the dataset's resource (see [compliance.md](./compliance.md#operational-data-anepc)).
-4. After deploying, `curl -s <site>/api/incidents | jq '{generatedAt, n: (.incidents | length), outcome: .ingestHealth.outcome}'` shows a recent `generatedAt` and `success`.
+| Check | Result |
+|---|---|
+| Layer metadata | Feature layer "Ocorrencias", point geometry, WGS 84, `maxRecordCount` 2 000, pagination supported, date fields declared UTC, ArcGIS cache `max-age=120` |
+| Fields | All 15 fields the parser reads exist with the expected types (`CodNatureza` is a small integer, `DataOcorrencia` and `DataDosDados` are dates, counts are small integers) |
+| Full query | HTTP 200 in 241 ms; 53 open occurrences of 15 natures, 57 KiB uncompressed (8 KiB with Brotli); no truncation; every record has geometry, all inside the mainland box, coordinates agree with the `Latitude` attribute; no duplicate numbers; no null counts |
+| Phases | `EstadoAgrupado`: Em Curso, Em Despacho, Em Conclusão, Em Resolução (all mapped); `EstadoOcorrencia` adds "Despacho de 1º Alerta", "Chegada ao TO" and "Vigilância", which the parser uses only when `EstadoAgrupado` is missing |
+| Rural fires | 5 records with codes 31xx (4 × 3103 Mato, 1 × 3101 Povoamento Florestal; 3111 Queima excluded); one has been open, "Em Conclusão", for 19 days |
+| The ingest itself | The PR's `refreshOperationalIncidents` ran once against the live layer: one page, `success`, 53 source rows, 5 rural fires, publication time 2 minutes old after the correction, 3.5 KiB snapshot with no address, reconciled against production's 11 detections in mainland Portugal (none within the rules) |
+
+Still to watch after the first deploy: the scheduled runs on Cloudflare (see the checklist under Testing) and how the layer behaves during a severe fire day, which no check on a quiet October day can show.
 
 ## Reconciliation
 
@@ -160,11 +170,11 @@ Each source has its own policy, so one outage produces at most one message per e
 | Refresh not running | no attempt recorded for 2 h | no attempt recorded for 1 h |
 | Recovered | the first success after any of the above | the same |
 
-A failure of one source never raises the other's alert, and the title names the source ("ANEPC refresh failing", "Operational data is stale"). The stall check runs before the heavy work, in case the current run is stopped too. The debounce state lives inside each health record, so alerts add no KV writes.
+A failure of one source never raises the other's alert, and the title names the source ("ANEPC refresh failing", "Operational data is stale"). The stall check runs before the heavy work, in case the current run is stopped too. The debounce state lives inside each health record, so alerts add no KV writes. ANEPC alerts are sent only after that record is stored: if the write fails (for example when the daily KV write limit is reached), the alert waits for a run that can record it instead of repeating on every run.
 
 ### Daily summary
 
-Once a day, from 07:00 UTC, the hourly run looks at counters accumulated since the last summary and sends one message **only if something is worth reading**:
+Once a day, from 07:00 UTC, the first ANEPC run looks at counters accumulated since the last summary and sends one message **only if something is worth reading**:
 
 | Reported when | Example line |
 |---|---|
@@ -207,28 +217,35 @@ Error logs record error names and HTTP statuses only: a fetch error message can 
 
 ## Free-plan budget
 
-Everything runs on the Workers Free plan. No paid feature is enabled.
+No paid feature is enabled. The plan the Cloudflare account is on could not be checked from here (the Cloudflare tools were not authorised in this environment); the figures below are compared with the Free plan's documented limits.
 
 | Resource (Free plan) | Limit | WildfireWatch |
 |---|---|---|
-| Cron Triggers | 5 per account | 2 schedules: `0 * * * *` (FIRMS, then ANEPC, then the daily summary) and `15,30,45 * * * *` (ANEPC) |
+| Cron Triggers | 5 per account | 2 schedules: `0 * * * *` (FIRMS) and `5,20,35,50 * * * *` (ANEPC, then the daily summary when due) |
 | KV writes | 1 000/day, account-wide | about **291/day** when everything succeeds: FIRMS 4 per run (snapshot, health, recurrence history, fusion index) × 24 = 96; ANEPC 2 per run (snapshot, health) × 96 = 192; daily summary 3. A failed run writes 1 (its health record), +1 when a stall alert is recorded. User routes: 0 |
-| KV reads | 100 000/day | scheduled runs: about 270/day; `/api/fires` and `/api/incidents`: ≤ 2 per minute per isolate each |
-| Worker requests | 100 000/day | page loads, API calls and 96 scheduled invocations a day (24 hourly, 72 quarter-hour); static assets are free |
-| CPU time | 10 ms per request and per cron run | see below |
-| Subrequests | 50 external per invocation | top-of-hour run: 1 FIRMS + 1 ANEPC call + alert calls (at most 2 per message); quarter-hour runs: 1 ANEPC call + alerts |
+| KV reads | 100 000/day | scheduled runs: about 340/day (FIRMS 2 per run × 24; ANEPC health, fusion index and the summary's state, 3 per run × 96); `/api/fires` and `/api/incidents`: ≤ 2 per minute per isolate each |
+| Worker requests | 100 000/day | page loads, API calls and 120 scheduled invocations a day (24 FIRMS, 96 ANEPC); static assets are free |
+| CPU time | 10 ms per request and per cron run, "with some built-in flexibility" for infrequent overruns | see below |
+| Subrequests | 50 external per invocation | FIRMS run: 1 FIRMS call + alerts; ANEPC run: 1 call per page (1 today, at most 5) + alerts |
 
-**CPU.** The Free plan's documented CPU limit is 10 ms per cron run, with some per-isolate tolerance for occasional overruns. Parsing the worldwide FIRMS CSV needs far more, and that was already the case before ANEPC was added. If runs start being stopped, the panel says refreshes have stopped and the stall alert fires; the fixes are a smaller FIRMS feed (fewer days or a regional area) or the Workers Paid plan, and neither is applied today.
+### CPU
 
-The ANEPC run is much lighter. Measured on synthetic data with Node 22 on the build machine (median of 7 cold runs; Workers CPU accounting differs, so these are indications, not guarantees):
+Measured on 12/10/2026 in `workerd`, the open-source Workers runtime, on a GitHub Actions runner, with the V8 sampling profiler: the CPU time a request spends outside "idle", median of 15 runs (first run in brackets). The ANEPC figures are the run's local work (reading the response, parsing, reading the fusion index, reconciling, serialising); waiting on ANEPC or KV is not CPU time. These are runtime measurements, not Cloudflare's billing figures.
 
-| Scenario | Open rural fires / other records | Detections in mainland Portugal | Parse | Read fusion index | Reconcile | Total | Stored snapshot | `/api/incidents` (gzip) |
-|---|---|---|---|---|---|---|---|---|
-| Quiet day | 15 / 60 | 200 | 1.4 ms | 0.6 ms | 2.0 ms | ≈ 4 ms | 11 KiB | 1.5 KiB |
-| Busy day | 120 / 150 | 2 000 | 2.8 ms | 4.0 ms | 7.8 ms | ≈ 15 ms | 89 KiB | 7.6 KiB |
-| Extreme day | 300 / 200 | 8 000 | 4.7 ms | 14.2 ms | 20.6 ms | ≈ 41 ms | 274 KiB | 25.5 KiB |
+| Run | Input | CPU median (max) |
+|---|---|---|
+| ANEPC, live data | 53 occurrences (5 rural fires), production's 11 detections in mainland Portugal | **1.7 ms** (5.5) |
+| ANEPC, quiet day | 75 occurrences (15 rural fires), 200 detections | 1.0 ms (5.2) |
+| ANEPC, busy day | 270 occurrences (120 rural fires), 2 000 detections | 4.4 ms (5.5) |
+| ANEPC, extreme day | 500 occurrences (300 rural fires), 8 000 detections | 13.1 ms (15.3; first run 20.4) |
+| FIRMS (existing hourly run, unchanged by this work) | 134 651-row worldwide CSV, the size production processed at 12:00 UTC on 12/10/2026 | **781 ms** (963) |
 
-Warm runs of the same code take a fraction of these times (the busy-day reconciliation takes about 2 ms warm). Before the grid index, the busy-day reconciliation alone took about 65 ms and the extreme one about 630 ms. On a busy or extreme day the quarter-hour run can still exceed 10 ms; a stopped run keeps the previous snapshot, the panel labels it as out of date after 45 minutes, and the stall alert fires after an hour. The next optimisation, once the live schema is confirmed, is the server-side filter described in [Operational source](#operational-source-anepc).
+What this means:
+
+- The ANEPC run is well under 10 ms on every day except a nationwide extreme, where it is about 13–20 ms. It runs in its own invocation, so it can never push the FIRMS run over a limit or the other way round.
+- The existing FIRMS run needs about 0.8 s of CPU every hour, eighty times the documented Free-plan limit, and production's health record shows it succeeding (attempted and succeeded at 12:00:51 UTC, no consecutive failures). Either the account is not held to 10 ms for cron runs, or it is on a plan with a higher limit. In both cases the ANEPC run, at roughly 1 % of that, is not the limiting factor.
+- If Cloudflare ever does stop runs for CPU, the safeguards already cover it: a stopped run keeps the previous snapshot, the panel labels it out of date (45 minutes for ANEPC, 90 for FIRMS), and the stall alert fires (1 h, 2 h). The fixes would be, in order: a smaller FIRMS feed (a regional area or fewer days), which is where the CPU is; then the Workers Paid plan. Neither is applied.
+- Where the ANEPC time goes on an extreme day: reconciliation about 6 ms, reading the 540 KiB fusion index about 4 ms, the rest parsing and serialising. Reconciliation already uses a spatial grid (it took about 630 ms without one).
 
 ## Security headers
 
@@ -263,6 +280,28 @@ The end-to-end suite proves the app's own behaviour with deterministic synthetic
 3. `curl -sI https://wildfire-watch.duartemonteiro.workers.dev/api/fires` shows `x-wildfire-ingest-outcome: success` and a `content-security-policy` header.
 4. Selecting a detection shows a place name, model weather, an air-quality reading or "no monitor", and news or "no recent coverage".
 5. The browser console shows no Content Security Policy violations.
-6. In the Cloudflare dashboard (Workers → wildfire-watch → Logs), the latest cron runs logged "Scheduled refresh succeeded", with `firms` on the top-of-hour run and `anepc` on every run.
-7. On the same host, `/api/incidents` answers `200` with a `generatedAt` less than 20 minutes old (outside the fire season the list can be empty; that is not a failure).
-8. The overview shows the "Ocorrências oficiais" card with the "Atual" badge, and a detection in mainland Portugal says whether an occurrence is nearby.
+6. In the Cloudflare dashboard (Workers → wildfire-watch → Logs), the latest cron runs logged "Scheduled refresh succeeded", with `firms` on the :00 run and `anepc` on the :05, :20, :35 and :50 runs.
+
+### First deploy of the ANEPC source
+
+Nothing to configure: the ANEPC layer needs no key, and the crons and KV keys ship with the code. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (or `DISCORD_WEBHOOK_URL`) are optional. After the merge to `main` deploys, run the checks above, then:
+
+| Area | Check | Expected |
+|---|---|---|
+| Real ANEPC ingest | Wait for the first ANEPC run (:05, :20, :35 or :50) | Logs show "Scheduled refresh succeeded" with `anepc.outcome: success` and a `sourceRows` in the tens or hundreds |
+| `/api/incidents` | `curl -s <site>/api/incidents \| jq '{generatedAt, n: (.incidents \| length), health: .ingestHealth.outcome}'` | `200`, `generatedAt` under 20 minutes old, `success`; `n` can be 0 outside the fire season |
+| Times | Open an occurrence panel | "Início" matches the ANEPC website (in UTC); "Última atualização da ANEPC" is a few minutes old, never in the future |
+| Source health and freshness | The "Ocorrências oficiais" card | Badge "Atual"; the FIRMS badge unchanged |
+| FIRMS non-regression | `curl -sI <site>/api/fires`; the map | `x-wildfire-ingest-outcome: success`; detections, timeline and detail panels as before |
+| Map layers and panels | Rings on the map; an occurrence in the card; a detection in mainland Portugal | Sky-blue rings; the occurrence panel shows phase, resources and satellite evidence; the detection says whether an occurrence is linked, ambiguous, not linked, or not yet compared |
+| Error and stale behaviour | Already covered by the end-to-end suite with synthetic data; in production, only observe | If ANEPC fails, the card turns "Atualização com falhas", then "Pode estar desatualizado" after 45 minutes, and FIRMS is unaffected |
+| Scheduled execution and CPU | Workers → wildfire-watch → Metrics: invocation statuses and CPU time per invocation | No `exceededCpu` outcomes; ANEPC invocations in single-digit milliseconds of CPU; the FIRMS invocation as before this change |
+| Alerts | With Telegram configured, nothing arrives on a healthy day | No message; the daily summary only when something is worth reading |
+
+### Rollback
+
+The previous version runs the FIRMS refresh on *every* cron it receives, so it must not be left with the ANEPC schedule (`5,20,35,50 * * * *`): FIRMS would then run five times an hour, with five times the KV writes and CPU.
+
+1. Preferred: revert the merge commit on `main` with a pull request. The deploy workflow redeploys the previous code together with its `wrangler.jsonc`, which has the single `0 * * * *` trigger.
+2. Faster, if the site is misbehaving: in the Cloudflare dashboard (Workers → wildfire-watch → Deployments) roll back to the previous version, then open Settings → Triggers and check that only `0 * * * *` remains; remove `5,20,35,50 * * * *` if it is still listed. Follow up with step 1 so the next deploy does not bring the change back.
+3. Nothing needs cleaning in KV: the previous version ignores the ANEPC keys (`operational-incidents:*`, `active-fires:fusion-index:v1`, `operations:digest:v1`), and FIRMS keeps its own keys.

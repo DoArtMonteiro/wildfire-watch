@@ -223,7 +223,7 @@ const en = {
     satelliteAmbiguousOnly: "Nearby satellite detections: {count}. They lie at similar distances from this and another occurrence, so they are linked to neither.",
     howLinkedTitle: "How the sources are linked",
     howLinkedText: "A satellite detection is linked to an occurrence when it lies within {radius} km of the registered location and was acquired no more than {window} h before the occurrence started. If two occurrences are at similar distances (within {margin} km of each other), the detection is linked to neither.",
-    attribution: "Source: ANEPC — Autoridade Nacional de Emergência e Proteção Civil (dados.gov.pt, CC BY 4.0).",
+    attribution: "Source: ANEPC — Autoridade Nacional de Emergência e Proteção Civil, public geoPROCIV layer. Dataset “ProCiv – Ocorrências em aberto”, listed on dados.gov.pt under CC BY 4.0. Filtered and linked by WildfireWatch.",
     officialDisclaimer: "ANEPC data shown by WildfireWatch, which is not an official channel. It can be a few minutes behind. In an emergency, call 112 and follow Civil Protection instructions.",
     legendLabel: "ANEPC occurrence",
   },
