@@ -937,9 +937,10 @@ async function ingestSnapshot(env: FirmsIngestEnv, now: () => number): Promise<{
     throw new IngestFailure("storage_error", counts);
   }
 
-  // The operational-incident runs between FIRMS runs reconcile against these
-  // few hundred points instead of parsing the whole snapshot. Best effort: a
-  // stale index only delays reconciliation with the newest detections.
+  // The ANEPC runs reconcile against these detections (those of the snapshot
+  // inside mainland Portugal: 11 on 12/10/2026, a few thousand on a severe fire
+  // day) instead of parsing the whole snapshot. Best effort: a stale index only
+  // delays reconciliation with the newest detections.
   await env.FIRMS_CACHE.put(FUSION_INDEX_KEY, JSON.stringify(buildFusionIndex(points, generatedAt))).catch(() => {
     console.warn("FIRMS fusion index could not be written");
   });

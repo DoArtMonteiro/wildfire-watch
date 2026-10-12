@@ -68,15 +68,26 @@ function health(kv: FakeKv, key: string) {
   return parseIngestHealth(JSON.parse(kv.store.get(key) ?? "null"));
 }
 
-test("the hourly run refreshes FIRMS, then reconciles ANEPC against the detections it just fetched", async () => {
-  const now = Date.parse("2026-08-12T15:00:00.000Z");
-  const kv = new FakeKv();
-  const { restore } = withUpstreams({ firms: "up", anepc: "up" }, now);
+async function run(cron: string, kv: FakeKv, at: number, options: { firms: "up" | "down"; anepc: "up" | "down" }): Promise<string[]> {
+  const upstreams = withUpstreams(options, at);
   try {
-    await runScheduled(FIRMS_CRON, env(kv), { now: () => now, channels: [] });
+    await runScheduled(cron, env(kv), { now: () => at, channels: [] });
   } finally {
-    restore();
+    upstreams.restore();
   }
+  return upstreams.hosts;
+}
+
+test("FIRMS and ANEPC run in separate invocations; ANEPC reconciles against the index FIRMS stored", async () => {
+  const kv = new FakeKv();
+  const hourly = Date.parse("2026-08-12T15:00:00.000Z");
+  const firmsHosts = await run(FIRMS_CRON, kv, hourly, { firms: "up", anepc: "up" });
+  assert.ok(!firmsHosts.some((host) => host.includes("arcgis")), "the FIRMS invocation never calls ANEPC");
+  assert.ok(kv.store.has(FIRMS_CACHE_KEY));
+  assert.ok(!kv.store.has(INCIDENTS_CACHE_KEY));
+
+  const operationalHosts = await run(OPERATIONAL_CRON, kv, hourly + 5 * 60_000, { firms: "up", anepc: "up" });
+  assert.ok(!operationalHosts.includes("firms.modaps.eosdis.nasa.gov"), "the ANEPC invocation never calls FIRMS");
   const firms = JSON.parse(kv.store.get(FIRMS_CACHE_KEY) ?? "null");
   const incidents = parseIncidentsPayload(JSON.parse(kv.store.get(INCIDENTS_CACHE_KEY) ?? "null"));
   assert.equal(incidents?.fusedWith?.firmsGeneratedAt, firms.generatedAt);
@@ -84,54 +95,32 @@ test("the hourly run refreshes FIRMS, then reconciles ANEPC against the detectio
   assert.equal(health(kv, FIRMS_INGEST_HEALTH_KEY)?.outcome, "success");
   assert.equal(health(kv, INCIDENTS_INGEST_HEALTH_KEY)?.outcome, "success");
 });
-
 test("one source failing never stops or alters the other", async () => {
-  const now = Date.parse("2026-08-12T15:00:00.000Z");
+  const hourly = Date.parse("2026-08-12T15:00:00.000Z");
   const firmsDown = new FakeKv();
-  let upstreams = withUpstreams({ firms: "down", anepc: "up" }, now);
-  try {
-    await runScheduled(FIRMS_CRON, env(firmsDown), { now: () => now, channels: [] });
-  } finally {
-    upstreams.restore();
-  }
+  await run(FIRMS_CRON, firmsDown, hourly, { firms: "down", anepc: "up" });
+  await run(OPERATIONAL_CRON, firmsDown, hourly + 5 * 60_000, { firms: "down", anepc: "up" });
   assert.equal(health(firmsDown, FIRMS_INGEST_HEALTH_KEY)?.outcome, "failure");
   assert.equal(health(firmsDown, INCIDENTS_INGEST_HEALTH_KEY)?.outcome, "success");
-  assert.ok(firmsDown.store.has(INCIDENTS_CACHE_KEY));
+  assert.equal(parseIncidentsPayload(JSON.parse(firmsDown.store.get(INCIDENTS_CACHE_KEY) ?? "null"))?.fusedWith, null, "stored, honestly unreconciled");
 
   const anepcDown = new FakeKv();
-  upstreams = withUpstreams({ firms: "up", anepc: "down" }, now);
-  try {
-    await runScheduled(FIRMS_CRON, env(anepcDown), { now: () => now, channels: [] });
-  } finally {
-    upstreams.restore();
-  }
+  await run(FIRMS_CRON, anepcDown, hourly, { firms: "up", anepc: "down" });
+  await run(OPERATIONAL_CRON, anepcDown, hourly + 5 * 60_000, { firms: "up", anepc: "down" });
   assert.equal(health(anepcDown, FIRMS_INGEST_HEALTH_KEY)?.outcome, "success");
   assert.equal(health(anepcDown, INCIDENTS_INGEST_HEALTH_KEY)?.outcome, "failure");
   assert.ok(anepcDown.store.has(FIRMS_CACHE_KEY));
 });
-
-test("the quarter-hour runs refresh ANEPC only", async () => {
-  const now = Date.parse("2026-08-12T15:15:00.000Z");
-  const kv = new FakeKv();
-  const { restore, hosts } = withUpstreams({ firms: "up", anepc: "up" }, now);
-  try {
-    await runScheduled(OPERATIONAL_CRON, env(kv), { now: () => now, channels: [] });
-  } finally {
-    restore();
-  }
-  assert.ok(!hosts.includes("firms.modaps.eosdis.nasa.gov"));
-  assert.ok(kv.store.has(INCIDENTS_CACHE_KEY));
-  assert.ok(!kv.store.has(FIRMS_CACHE_KEY));
-});
-
 test("the daily summary is sent once, only with something to report, and starts a new window", async () => {
   const sent: string[] = [];
   const channel: AlertChannel = { name: "telegram", send: async (text) => { sent.push(text); return new Response(null, { status: 200 }); } };
   const kv = new FakeKv();
   const day = Date.parse("2026-08-12T00:00:00.000Z");
-  const quarters = (fromHour: number, toHour: number) => Array.from({ length: (toHour - fromHour) * 4 + 1 }, (_, index) => day + fromHour * 3_600_000 + index * 15 * 60_000);
+  // Every scheduled run from fromHour:00 to toHour:05: FIRMS at :00, ANEPC at :05, :20, :35 and :50.
+  const quarters = (fromHour: number, toHour: number) => Array.from({ length: (toHour - fromHour) * 60 + 6 }, (_, minute) => day + fromHour * 3_600_000 + minute * 60_000)
+    .filter((at) => [0, 5, 20, 35, 50].includes(new Date(at).getUTCMinutes()));
   // Two short ANEPC outages before 07:00 UTC that recovered before alerting.
-  const anepcDownAt = new Set([day + 5 * 3_600_000 + 15 * 60_000, day + 5 * 3_600_000 + 45 * 60_000]);
+  const anepcDownAt = new Set([day + 5 * 3_600_000 + 20 * 60_000, day + 5 * 3_600_000 + 50 * 60_000]);
 
   async function runAt(at: number): Promise<void> {
     const cron = new Date(at).getUTCMinutes() === 0 ? FIRMS_CRON : OPERATIONAL_CRON;
@@ -154,7 +143,7 @@ test("the daily summary is sent once, only with something to report, and starts 
   assert.ok(kv.store.has(DIGEST_STATE_KEY));
 
   // The rest of the day: a new, quiet window, and no second summary.
-  for (const at of quarters(7, 9).slice(1)) await runAt(at);
+  for (const at of quarters(7, 9).filter((at) => at > day + 7 * 3_600_000 + 5 * 60_000)) await runAt(at);
   assert.equal(sent.length, 1);
   assert.equal(health(kv, INCIDENTS_INGEST_HEALTH_KEY)?.signals?.failedAttempts, 0);
 });

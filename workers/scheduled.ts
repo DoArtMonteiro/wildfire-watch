@@ -1,19 +1,28 @@
 import { refreshFirmsCache, type FirmsIngestEnv, type IngestRunReport } from "./firms-ingest";
-import { refreshOperationalIncidents, type AnepcRunReport, type FusionInput } from "./anepc-ingest";
-import { FIRMS_INGEST_HEALTH_KEY, type FirmsCachePayload } from "../src/lib/wildfire/firms-cache";
-import { INCIDENTS_INGEST_HEALTH_KEY, buildFusionIndex, readFusionIndex } from "../src/lib/operational/incidents-cache";
+import { refreshOperationalIncidents, type AnepcRunReport } from "./anepc-ingest";
+import { FIRMS_INGEST_HEALTH_KEY } from "../src/lib/wildfire/firms-cache";
+import { INCIDENTS_INGEST_HEALTH_KEY } from "../src/lib/operational/incidents-cache";
 import { parseIngestHealth, type IngestHealthRecord } from "../src/lib/wildfire/ingest-health";
 import { deliverText, type AlertChannel } from "../src/lib/monitoring/alert-channels";
 import { emptySignals, formatDigestText, isDigestDue, planDigest } from "../src/lib/monitoring/daily-digest";
 
 /**
- * What each cron trigger does. Free-plan budget (per day, account-wide KV
- * limit 1,000 writes): the hourly run writes 4 FIRMS keys and 2 ANEPC keys,
- * the three quarter-hour runs 2 ANEPC keys each, and the daily summary at
- * most 3 more: about 290 writes a day.
+ * What each cron trigger does. Each source has its own invocation, so its CPU
+ * time is counted on its own and a run stopped for exceeding a limit can only
+ * cost that source's refresh:
+ *
+ *   FIRMS_CRON        FIRMS only; it stores the fusion index of detections in
+ *                     mainland Portugal for the ANEPC runs.
+ *   OPERATIONAL_CRON  ANEPC, reconciled with that index, then the daily
+ *                     summary when it is due (five minutes after FIRMS, so
+ *                     the :05 run uses the index written at :00).
+ *
+ * Free-plan budget (per day, account-wide KV limit 1,000 writes): the hourly
+ * FIRMS run writes 4 keys, each of the four ANEPC runs an hour 2 keys, and the
+ * daily summary at most 3 more: about 291 writes a day.
  */
 export const FIRMS_CRON = "0 * * * *";
-export const OPERATIONAL_CRON = "15,30,45 * * * *";
+export const OPERATIONAL_CRON = "5,20,35,50 * * * *";
 export const DIGEST_STATE_KEY = "operations:digest:v1";
 
 export type ScheduledEnv = FirmsIngestEnv;
@@ -37,11 +46,6 @@ async function isolated<T>(label: string, run: () => Promise<T>): Promise<T | nu
     console.error(`${label} scheduled run crashed`, error instanceof Error ? error.name : "unknown");
     return null;
   }
-}
-
-function fusionFrom(payload: FirmsCachePayload | null | undefined): FusionInput | undefined {
-  if (!payload) return undefined; // fall back to the stored index
-  return readFusionIndex(buildFusionIndex(payload.points, payload.generatedAt)) ?? undefined;
 }
 
 async function readHealth(env: ScheduledEnv, key: string): Promise<IngestHealthRecord | null> {
@@ -90,13 +94,12 @@ export async function runScheduled(cron: string, env: ScheduledEnv, options: Sch
   const now = options.now ?? Date.now;
   const { channels } = options;
 
-  if (cron !== FIRMS_CRON) {
-    const anepc = await isolated("ANEPC", () => refreshOperationalIncidents(env, { now, channels }));
-    return { firms: null, anepc, digestSent: false };
+  if (cron === FIRMS_CRON) {
+    const firms = await isolated("FIRMS", () => refreshFirmsCache(env, { now, channels }));
+    return { firms, anepc: null, digestSent: false };
   }
 
-  const firms = await isolated("FIRMS", () => refreshFirmsCache(env, { now, channels }));
-  const anepc = await isolated("ANEPC", () => refreshOperationalIncidents(env, { now, channels, fusion: fusionFrom(firms?.payload) }));
+  const anepc = await isolated("ANEPC", () => refreshOperationalIncidents(env, { now, channels }));
   const digestSent = (await isolated("Daily summary", () => runDigest(env, channels, now()))) ?? false;
-  return { firms, anepc, digestSent };
+  return { firms: null, anepc, digestSent };
 }

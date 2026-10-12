@@ -14,9 +14,10 @@
     }
   ],
   "triggers": {
-    // Hourly: FIRMS, then ANEPC and the daily summary. Quarter-hourly: ANEPC only.
+    // Hourly at :00: FIRMS only. Four times an hour from :05: ANEPC, then the daily
+    // summary when due. Each source runs in its own invocation, with its own CPU time.
     // Keep in step with FIRMS_CRON and OPERATIONAL_CRON in workers/scheduled.ts.
-    "crons": ["0 * * * *", "15,30,45 * * * *"]
+    "crons": ["0 * * * *", "5,20,35,50 * * * *"]
   },
   "observability": {
     "enabled": true
