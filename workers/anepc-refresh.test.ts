@@ -200,3 +200,55 @@ test("unreadable records and unknown phases are counted for the daily summary, n
     restore();
   }
 });
+
+test("a layer with more occurrences than one page is read page by page, and never cut short", async () => {
+  const kv = new FakeKv();
+  const page = (numero: string, more: boolean) => {
+    const body = JSON.parse(occurrences([{ Numero: numero }]));
+    return new Response(JSON.stringify(more ? { ...body, exceededTransferLimit: true } : body), { status: 200 });
+  };
+  const paged = withFetch(async (url) => (new URL(url).searchParams.get("resultOffset") === "0" ? page("1", true) : page("2", false)));
+  try {
+    const report = await refreshOperationalIncidents(env(kv), { now: () => NOW });
+    assert.equal(report.health.outcome, "success");
+    assert.deepEqual(paged.calls.map((url) => new URL(url).searchParams.get("resultOffset")), ["0", "2000"]);
+    assert.deepEqual(report.payload?.incidents.map((incident) => incident.sourceId).sort(), ["1", "2"]);
+  } finally {
+    paged.restore();
+  }
+
+  // A layer that never stops saying "more" fails the run; the last snapshot stays.
+  const endless = new FakeKv();
+  endless.store.set(INCIDENTS_CACHE_KEY, "previous-snapshot");
+  const neverEnding = withFetch(async (url) => page(new URL(url).searchParams.get("resultOffset") ?? "?", true));
+  try {
+    const report = await refreshOperationalIncidents(env(endless), { now: () => NOW });
+    assert.equal(report.health.errorCode, "incomplete_feed");
+    assert.equal(neverEnding.calls.length, 5);
+    assert.equal(endless.store.get(INCIDENTS_CACHE_KEY), "previous-snapshot");
+  } finally {
+    neverEnding.restore();
+  }
+});
+
+test("an alert is sent only once its state is stored, so a failing KV write never repeats it", async () => {
+  const kv = new FakeKv();
+  const sent: string[] = [];
+  const channel: AlertChannel = { name: "telegram", send: async (text) => { sent.push(text); return new Response(null, { status: 200 }); } };
+  const { restore } = withFetch(async () => new Response("", { status: 502 }));
+  try {
+    for (let run = 0; run < 6; run += 1) {
+      // From the run that would alert, the health record can no longer be written (the daily KV limit, say).
+      if (run === 3) kv.failingKeys.add(INCIDENTS_INGEST_HEALTH_KEY);
+      await refreshOperationalIncidents(env(kv), { now: () => NOW + run * QUARTER, channels: [channel] });
+    }
+    assert.deepEqual(sent, [], "nothing is sent while its state cannot be stored");
+    kv.failingKeys.delete(INCIDENTS_INGEST_HEALTH_KEY);
+    await refreshOperationalIncidents(env(kv), { now: () => NOW + 6 * QUARTER, channels: [channel] });
+    await refreshOperationalIncidents(env(kv), { now: () => NOW + 7 * QUARTER, channels: [channel] });
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /ANEPC refresh failing/);
+  } finally {
+    restore();
+  }
+});

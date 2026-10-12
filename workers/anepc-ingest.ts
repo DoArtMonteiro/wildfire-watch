@@ -1,5 +1,6 @@
 import {
   AnepcFeedError,
+  ANEPC_PAGE_SIZE,
   buildAnepcQueryUrl,
   parseAnepcOccurrences,
   type AnepcParseResult,
@@ -114,10 +115,15 @@ async function readHealth(kv: KvNamespace): Promise<IngestHealthRecord | null> {
   }
 }
 
-async function writeHealth(kv: KvNamespace, record: IngestHealthRecord): Promise<void> {
-  await kv.put(INCIDENTS_INGEST_HEALTH_KEY, JSON.stringify(record)).catch(() => {
+/** True when the record was stored. Alerts are sent only after it is, so a failed write never repeats them. */
+async function writeHealth(kv: KvNamespace, record: IngestHealthRecord): Promise<boolean> {
+  try {
+    await kv.put(INCIDENTS_INGEST_HEALTH_KEY, JSON.stringify(record));
+    return true;
+  } catch {
     console.warn("ANEPC ingest health could not be written");
-  });
+    return false;
+  }
 }
 
 async function readStoredFusion(kv: KvNamespace): Promise<FusionInput | null> {
@@ -128,8 +134,15 @@ async function readStoredFusion(kv: KvNamespace): Promise<FusionInput | null> {
   }
 }
 
-async function fetchOccurrences(now: number): Promise<AnepcParseResult> {
-  const response = await fetch(buildAnepcQueryUrl(), {
+/**
+ * At most this many pages (10 000 open occurrences; the layer held 53 on
+ * 12/10/2026). A layer that still has more is an incomplete feed, never a
+ * silently shortened list.
+ */
+const MAX_PAGES = 5;
+
+async function fetchPage(offset: number): Promise<Record<string, unknown>> {
+  const response = await fetch(buildAnepcQueryUrl(offset), {
     cache: "no-store",
     headers: { Accept: "application/json", "User-Agent": USER_AGENT },
     signal: AbortSignal.timeout(ANEPC_FETCH_TIMEOUT_MS),
@@ -151,7 +164,19 @@ async function fetchOccurrences(now: number): Promise<AnepcParseResult> {
   } catch {
     throw new AnepcIngestFailure("parse_error");
   }
-  return parseAnepcOccurrences(body, now);
+  return body && typeof body === "object" ? body as Record<string, unknown> : {};
+}
+
+async function fetchOccurrences(now: number): Promise<AnepcParseResult> {
+  const features: unknown[] = [];
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const body = await fetchPage(page * ANEPC_PAGE_SIZE);
+    // An error body or an unexpected shape is judged by the parser, as for a single page.
+    if (body.error || !Array.isArray(body.features)) return parseAnepcOccurrences(body, now);
+    features.push(...body.features);
+    if (body.exceededTransferLimit !== true) return parseAnepcOccurrences({ features }, now);
+  }
+  throw new AnepcIngestFailure("incomplete_feed");
 }
 
 interface IngestResult {
@@ -190,8 +215,7 @@ export async function refreshOperationalIncidents(env: AnepcIngestEnv, options: 
   const stall = planStallAlert(previous, now(), ANEPC_ALERT_POLICY);
   if (stall.alerts.length > 0 && previous) {
     previous = { ...previous, alerts: stall.alertState };
-    deliveries.push(...await deliverAlerts(stall.alerts, channels));
-    await writeHealth(env.FIRMS_CACHE, previous);
+    if (await writeHealth(env.FIRMS_CACHE, previous)) deliveries.push(...await deliverAlerts(stall.alerts, channels));
   }
 
   const startedMs = Date.now();
@@ -224,7 +248,7 @@ export async function refreshOperationalIncidents(env: AnepcIngestEnv, options: 
     signals: accumulateSignals(previous, observation, now()),
   };
 
-  deliveries.push(...await deliverAlerts(plan.alerts, channels));
-  await writeHealth(env.FIRMS_CACHE, health);
+  // Record first: an alert whose debounce state could not be stored would be sent again on every run.
+  if (await writeHealth(env.FIRMS_CACHE, health)) deliveries.push(...await deliverAlerts(plan.alerts, channels));
   return { health, payload, alerts: [...stall.alerts, ...plan.alerts], deliveries };
 }

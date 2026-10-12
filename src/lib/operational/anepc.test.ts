@@ -32,12 +32,17 @@ function body(features: unknown[], extra: Record<string, unknown> = {}) {
   return { objectIdFieldName: "OBJECTID", features, ...extra };
 }
 
-test("the query asks the occurrences layer for every field, in WGS 84, as JSON", () => {
-  const url = new URL(buildAnepcQueryUrl());
+test("the query asks for the fields the parser reads, never the address, a page at a time, in WGS 84, as JSON", () => {
+  const url = new URL(buildAnepcQueryUrl(2_000));
   assert.equal(url.protocol, "https:");
   assert.match(url.pathname, /\/FeatureServer\/0\/query$/);
   assert.equal(url.searchParams.get("where"), "1=1");
-  assert.equal(url.searchParams.get("outFields"), "*");
+  const fields = url.searchParams.get("outFields")!.split(",");
+  assert.ok(fields.includes("DataOcorrencia") && fields.includes("CodNatureza"));
+  assert.ok(!fields.includes("Endereco") && !fields.includes("*"));
+  assert.equal(url.searchParams.get("orderByFields"), "ID_oc");
+  assert.equal(url.searchParams.get("resultOffset"), "2000");
+  assert.equal(url.searchParams.get("resultRecordCount"), "2000");
   assert.equal(url.searchParams.get("outSR"), "4326");
   assert.equal(url.searchParams.get("f"), "json");
 });
@@ -179,4 +184,41 @@ test("an ArcGIS error body or a changed schema fails the run instead of publishi
   // Rural fires arrive but none is usable.
   const unusable = body([1, 2, 3].map(() => feature({ Numero: undefined, ID_oc: undefined })));
   assert.throws(() => parseAnepcOccurrences(unusable, NOW), (error: unknown) => error instanceof AnepcFeedError && error.code === "parse_error");
+});
+
+test("the publication time, which the layer sends in Lisbon wall-clock time, is read as UTC", () => {
+  // Observed live on 12/10/2026 at 12:17 UTC: DataOcorrencia in UTC, DataDosDados 59 minutes ahead.
+  const fetchedAt = Date.parse("2026-10-12T12:17:27Z");
+  const summer = parseAnepcOccurrences(body([feature({
+    DataOcorrencia: Date.parse("2026-10-12T12:07:00Z"),
+    DataDosDados: Date.parse("2026-10-12T13:16:00Z"),
+  })]), fetchedAt);
+  assert.equal(summer.incidents[0].startedAt, "2026-10-12T12:07:00.000Z");
+  assert.equal(summer.incidents[0].updatedAt, "2026-10-12T12:16:00.000Z");
+
+  // In winter Lisbon is on UTC, and a publication time in the past is never shifted.
+  const winterNow = Date.parse("2026-01-15T10:00:00Z");
+  const winter = parseAnepcOccurrences(body([feature({
+    DataOcorrencia: winterNow - 3 * HOUR,
+    DataDosDados: Date.parse("2026-01-15T09:58:00Z"),
+  })]), winterNow);
+  assert.equal(winter.incidents[0].updatedAt, "2026-01-15T09:58:00.000Z");
+  const correctUtc = parseAnepcOccurrences(body([feature({ DataDosDados: fetchedAt - 60_000, DataOcorrencia: fetchedAt - HOUR })]), fetchedAt);
+  assert.equal(correctUtc.incidents[0].updatedAt, new Date(fetchedAt - 60_000).toISOString());
+});
+
+test("a newer closed record for an occurrence hides an older open one", () => {
+  const result = parseAnepcOccurrences(body([
+    feature({ Numero: "77", EstadoAgrupado: "Em Curso", DataDosDados: NOW - 30 * 60_000 }),
+    feature({ Numero: "77", EstadoAgrupado: "Encerrada", DataDosDados: NOW - 5 * 60_000 }),
+  ]), NOW);
+  assert.deepEqual(result.incidents, []);
+  assert.equal(result.quality.duplicateRecords, 1);
+});
+
+test("both coordinates come from one source: the geometry when complete, otherwise the attributes", () => {
+  const partialGeometry = parseAnepcOccurrences(body([feature({ Latitude: 41.5, Longitude: -7.5 }, { x: -8.05, y: Number.NaN })]), NOW);
+  assert.deepEqual(partialGeometry.incidents[0].location, { lat: 41.5, lng: -7.5 });
+  const fullGeometry = parseAnepcOccurrences(body([feature({ Latitude: 41.5, Longitude: -7.5 })]), NOW);
+  assert.deepEqual(fullGeometry.incidents[0].location, { lat: 40.22, lng: -8.05 });
 });

@@ -41,6 +41,8 @@ const NOT_WILDFIRE_CODES = new Set(["3107", "3109", "3111"]);
 
 /** A record published more than this far in the future is a clock or format error. */
 const FUTURE_TOLERANCE_MS = 60 * 60 * 1_000;
+/** A publication time this far ahead of the fetch is a time-zone error, not clock skew. */
+const PUBLICATION_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 const MAX_TEXT_LENGTH = 80;
 const MAX_COUNT = 10_000;
 const MAX_UNRECOGNISED_PHASES = 10;
@@ -71,13 +73,30 @@ export interface AnepcParseResult {
   };
 }
 
-export function buildAnepcQueryUrl(): string {
+/**
+ * The fields the parser reads, all present (with these names) in the live
+ * layer on 12/10/2026. Asking for them by name keeps the street address and
+ * every unused field out of the response, and makes a renamed field fail the
+ * query loudly instead of producing empty records.
+ */
+export const ANEPC_FIELDS = [
+  "ID_oc", "Numero", "EstadoAgrupado", "EstadoOcorrencia", "CodNatureza", "Natureza", "DataOcorrencia", "DataDosDados",
+  "Concelho", "Freguesia", "Operacionais", "MeiosTerrestres", "MeiosAereos", "Latitude", "Longitude",
+] as const;
+
+/** The layer's maximum page size (maxRecordCount 2000 on 12/10/2026). */
+export const ANEPC_PAGE_SIZE = 2_000;
+
+/** One page of every open occurrence, in a stable order so pages do not overlap. */
+export function buildAnepcQueryUrl(offset = 0): string {
   const params = new URLSearchParams({
     where: "1=1",
-    // Every field: asking for a named field the layer has renamed would fail the whole query.
-    outFields: "*",
+    outFields: ANEPC_FIELDS.join(","),
     returnGeometry: "true",
     outSR: "4326",
+    orderByFields: "ID_oc",
+    resultOffset: String(offset),
+    resultRecordCount: String(ANEPC_PAGE_SIZE),
     f: "json",
   });
   return `${ANEPC_LAYER_URL}/query?${params}`;
@@ -124,6 +143,30 @@ function timestamp(value: unknown, now: number): string | null {
   return new Date(ms).toISOString();
 }
 
+/** The offset of Europe/Lisbon from UTC at an instant, in milliseconds (0 in winter, 1 h in summer). */
+function lisbonOffsetMs(ms: number): number {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Lisbon", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(ms).map((part) => [part.type, part.value]));
+  const wallClock = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute));
+  return wallClock - Math.floor(ms / 60_000) * 60_000;
+}
+
+/**
+ * The layer's publication time (DataDosDados). The layer declares its dates in
+ * UTC, and DataOcorrencia is, but DataDosDados was observed on 12/10/2026 to
+ * carry Lisbon wall-clock time encoded as UTC: one hour ahead of the fetch in
+ * summer time. A value ahead of now is therefore read as Lisbon time; a
+ * correct UTC value is never ahead of now and is kept as it is.
+ */
+function publicationTime(value: unknown, now: number): string | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > now + PUBLICATION_CLOCK_SKEW_MS) {
+    const asLisbon = value - lisbonOffsetMs(value - lisbonOffsetMs(value));
+    return timestamp(asLisbon, now);
+  }
+  return timestamp(value, now);
+}
+
 function natureCode(attributes: Record<string, unknown>): string | null {
   const direct = text(attributes.CodNatureza);
   if (direct && /^\d{4}$/.test(direct)) return direct;
@@ -133,8 +176,11 @@ function natureCode(attributes: Record<string, unknown>): string | null {
 
 function location(attributes: Record<string, unknown>, geometry: unknown): GeoPoint | null {
   const shape = geometry && typeof geometry === "object" ? geometry as Record<string, unknown> : null;
-  const lng = coordinate(shape?.x) ?? coordinate(attributes.Longitude);
-  const lat = coordinate(shape?.y) ?? coordinate(attributes.Latitude);
+  // One source for both axes: the geometry when complete, otherwise the attributes.
+  const fromGeometry = { lng: coordinate(shape?.x), lat: coordinate(shape?.y) };
+  const { lng, lat } = fromGeometry.lng !== null && fromGeometry.lat !== null
+    ? fromGeometry
+    : { lng: coordinate(attributes.Longitude), lat: coordinate(attributes.Latitude) };
   if (lat === null || lng === null) return null;
   const inside = lng >= ANEPC_COVERAGE.west && lng <= ANEPC_COVERAGE.east && lat >= ANEPC_COVERAGE.south && lat <= ANEPC_COVERAGE.north;
   return inside ? { lat, lng } : null;
@@ -150,7 +196,7 @@ function resources(attributes: Record<string, unknown>): OperationalResources {
 
 type RecordOutcome =
   | { kind: "not_rural_fire" }
-  | { kind: "closed" }
+  | { kind: "closed"; id: string; updatedAt: string | null }
   | { kind: "invalid" }
   | { kind: "incident"; incident: OperationalIncident };
 
@@ -170,7 +216,8 @@ function readRecord(raw: unknown, now: number): RecordOutcome & { hasNatureCode:
   if (!sourceId || !phaseLabel || !startedAt || !point) return { kind: "invalid", hasNatureCode: true };
 
   const phase = mapAnepcPhase(phaseLabel);
-  if (phase === null) return { kind: "closed", hasNatureCode: true };
+  const updatedAt = publicationTime(attributes.DataDosDados, now);
+  if (phase === null) return { kind: "closed", id: `anepc:${sourceId}`, updatedAt, hasNatureCode: true };
 
   const natureLabel = text(attributes.Natureza);
   return {
@@ -187,7 +234,7 @@ function readRecord(raw: unknown, now: number): RecordOutcome & { hasNatureCode:
       natureCode: code,
       natureLabel,
       startedAt,
-      updatedAt: timestamp(attributes.DataDosDados, now),
+      updatedAt,
       municipality: text(attributes.Concelho),
       parish: text(attributes.Freguesia),
       resources: resources(attributes),
@@ -195,8 +242,16 @@ function readRecord(raw: unknown, now: number): RecordOutcome & { hasNatureCode:
   };
 }
 
-function isNewer(candidate: OperationalIncident, current: OperationalIncident): boolean {
-  return (candidate.updatedAt ?? "") > (current.updatedAt ?? "");
+type Latest = { closed: true; updatedAt: string | null } | { closed: false; updatedAt: string | null; incident: OperationalIncident };
+
+/** Two records for one occurrence: the later publication wins; on a tie, a closed record wins, then the later start. */
+function isNewer(candidate: Latest, current: Latest): boolean {
+  const a = candidate.updatedAt ?? "";
+  const b = current.updatedAt ?? "";
+  if (a !== b) return a > b;
+  if (candidate.closed !== current.closed) return candidate.closed;
+  if (candidate.closed || current.closed) return false;
+  return candidate.incident.startedAt > current.incident.startedAt;
 }
 
 function compareIncidents(a: OperationalIncident, b: OperationalIncident): number {
@@ -210,7 +265,7 @@ export function parseAnepcOccurrences(body: unknown, now: number): AnepcParseRes
   if (response?.error) throw new AnepcFeedError("http_error");
   if (!response || !Array.isArray(response.features)) throw new AnepcFeedError("parse_error");
 
-  const byId = new Map<string, OperationalIncident>();
+  const byId = new Map<string, Latest>();
   const unrecognisedPhases = new Set<string>();
   let filteredRows = 0;
   let invalidRecords = 0;
@@ -226,16 +281,21 @@ export function parseAnepcOccurrences(body: unknown, now: number): AnepcParseRes
       invalidRecords += 1;
       continue;
     }
-    if (outcome.kind === "closed") continue;
-
-    const { incident } = outcome;
-    if (incident.phase === "other" && unrecognisedPhases.size < MAX_UNRECOGNISED_PHASES) unrecognisedPhases.add(incident.phaseLabel);
-    const existing = byId.get(incident.id);
+    // Closed records take part in deduplication, so an occurrence closed in a
+    // newer record is not shown from an older open one.
+    const id = outcome.kind === "closed" ? outcome.id : outcome.incident.id;
+    const latest: Latest = outcome.kind === "closed"
+      ? { closed: true, updatedAt: outcome.updatedAt }
+      : { closed: false, updatedAt: outcome.incident.updatedAt, incident: outcome.incident };
+    if (!latest.closed && latest.incident.phase === "other" && unrecognisedPhases.size < MAX_UNRECOGNISED_PHASES) {
+      unrecognisedPhases.add(latest.incident.phaseLabel);
+    }
+    const existing = byId.get(id);
     if (existing) {
       duplicateRecords += 1;
-      if (!isNewer(incident, existing)) continue;
+      if (!isNewer(latest, existing)) continue;
     }
-    byId.set(incident.id, incident);
+    byId.set(id, latest);
   }
 
   const sourceRows = response.features.length;
@@ -249,7 +309,7 @@ export function parseAnepcOccurrences(body: unknown, now: number): AnepcParseRes
   // records are dropped and counted instead, so they cannot stop the refresh.
   if (filteredRows >= MIN_ROWS_FOR_SCHEMA_CHECK && invalidRecords === filteredRows) throw new AnepcFeedError("parse_error");
 
-  const incidents = [...byId.values()].sort(compareIncidents);
+  const incidents = [...byId.values()].flatMap((entry) => (entry.closed ? [] : [entry.incident])).sort(compareIncidents);
   return {
     incidents,
     counts: { sourceRows, filteredRows, selectedPoints: incidents.length },
