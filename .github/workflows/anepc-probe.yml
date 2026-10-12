@@ -1,0 +1,45 @@
+name: ANEPC live probe (temporary)
+
+# Read-only investigation branch, never merged: checks the live ANEPC layer,
+# the dados.gov.pt record and the production FIRMS health from a runner with
+# normal internet access, then measures the ANEPC run's CPU in workerd.
+# Only aggregates are printed; no raw records are stored or uploaded.
+on:
+  push:
+    branches:
+      - probe/anepc-live
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Live source probe
+        run: |
+          mkdir -p probe-out
+          npx esbuild probe/live-source.ts --bundle --platform=node --format=esm --tsconfig=tsconfig.json --outfile=probe-out/live.mjs --log-level=warning
+          cd probe-out
+          SITE_URL="$(grep -o 'https://wildfire-watch[^ )]*workers.dev' ../README.md | head -1)" node live.mjs
+      - name: Live ingest with the PR code
+        run: |
+          npx esbuild probe/live-ingest.ts --bundle --platform=node --format=esm --tsconfig=tsconfig.json --outfile=probe-out/ingest.mjs --log-level=warning
+          cd probe-out && node ingest.mjs
+      - name: workerd CPU benchmark
+        run: |
+          npx esbuild probe/bench/bench-worker.ts --bundle --format=esm --platform=browser --tsconfig=tsconfig.json --outfile=probe/bench/dist/worker.js --log-level=warning
+          npx esbuild probe/bench/scenarios.ts --bundle --platform=node --format=cjs --tsconfig=tsconfig.json --outfile=probe-out/scenarios.cjs --log-level=warning
+          (cd probe-out && node scenarios.cjs)
+          (cd probe/bench && npx wrangler dev --ip=127.0.0.1 --port=8799 --inspector-port=9229 --log-level=warn --show-interactive-dev-session=false > /tmp/wrangler.log 2>&1 &)
+          curl -s -o /dev/null --retry 40 --retry-delay 1 --retry-connrefused -X POST "http://127.0.0.1:8799/?stage=0"
+          cd probe-out && REPO_ROOT="$GITHUB_WORKSPACE" RUNS=15 timeout 900 node ../probe/bench/profile-client.mjs
