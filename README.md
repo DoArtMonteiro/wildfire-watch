@@ -1,117 +1,117 @@
 # WildfireWatch
 
-A full-screen map of global wildfire activity, updated hourly from NASA FIRMS satellite detections.
+A map for exploring selected NASA FIRMS satellite thermal detections, with source provenance, feed-health reporting and a detail view.
 
-**Live:** https://wildfire-watch.duartemonteiro.workers.dev
+**Demo URL:** [wildfire-watch.duartemonteiro.workers.dev](https://wildfire-watch.duartemonteiro.workers.dev) · **Deployment:** configured for Cloudflare Workers through GitHub Actions.
 
-**Status:** Live, deployed from `main` by GitHub Actions.
+**Data note:** a thermal detection is not a confirmed fire. Satellite data can arrive hours after acquisition. Operational status is unknown unless an authority reports it; area and other derived values are labelled as estimates. In an emergency, call 112.
 
-Select any detection on the map, or pick one from the panel's keyboard-accessible list of the most intense detections, to see what the satellite measured (radiative power, acquisition time, the source's confidence), where the data came from, a labelled burned-area estimate, model weather, the nearest air-quality reading and related news. The overview always says whether the data is current, the last refresh failed, or the snapshot is out of date. Interface in European Portuguese and English, dark by default.
+[Operations](docs/operations.md) · [Compliance review](docs/compliance.md) · [Source code](src/lib/wildfire) · [Deployment workflow](.github/workflows/deploy.yml)
 
-WildfireWatch is an unofficial portfolio project. Satellite detections arrive a few hours late, not every thermal anomaly is a wildfire, a satellite cannot tell whether a fire is active, contained or out, and every area or air-quality figure is an estimate. In an emergency, call 112.
+## Why it exists
 
-## Motivation
+Global satellite feeds are difficult to inspect quickly. The project turns selected observations into a navigable map while keeping source measurements, derived estimates and operational claims distinct. The detail panel shows the source, acquisition time and confidence category, alongside clearly labelled estimates and related context.
 
-Portugal burns every summer, but information about a fire can be hard to piece together. It may be split between news tickers, civil protection PDFs, and satellite portals built for researchers rather than people trying to understand smoke on the horizon. Meanwhile, Flightradar24 has shown people that a live system can be understood by looking at a map.
+## How it works
 
-That gap is the whole project: take fire data that already exists in the open and make it legible at a glance, for a casual visitor, in their own language.
+An hourly Cloudflare Worker streams the worldwide three-day VIIRS feed, validates it and writes a processed snapshot plus a separate ingest-health record to KV. It replaces the last known-good snapshot only after a complete feed passes validation. The browser reads from the cache and does not wait for NASA.
 
-This is also a portfolio project. The goal is a working product that uses real data, not a demo with a "coming soon" label behind every button.
+The ingest keeps priority-region detections that pass its parsing and quality filters. It excludes low-confidence records, non-positive radiative power, and invalid coordinates or acquisition times. It reserves part of a capped sample for high-radiative-power detections worldwide, then spreads the remainder across a 2-degree grid. Overview counts describe this sample, not the entire FIRMS archive. Selecting a detection requests bounded, higher-resolution FIRMS data and supporting context through guarded routes.
 
-## Problems worth solving
-
-**The global feed is too big for a browser.** FIRMS returns every thermal anomaly on Earth for the requested window, which can create a multi-megabyte payload full of redundant points. Simple truncation can drop whole regions. Sorting by intensity alone would let agricultural burns in Africa crowd out other detections. Instead, the Worker keeps every detection in Portugal, reserves part of the budget for the highest radiative power worldwide, and fills the rest round-robin over a 2° grid so no continent goes dark.
-
-**Satellites report heat, not fires.** FIRMS provides hot pixels, while people look for incidents. Calling a pixel an "active fire" with a "severity" claims more than the data supports. The model keeps observations (what VIIRS measured), derived values (what WildfireWatch computes, labelled as estimates) and operational status (which only an authority can report, so it is "unknown" here) apart. The map clusters detections only for display, and at detail zoom draws each one as its real sensor pixel, not as a perimeter.
-
-**A recent snapshot is not the same as current data.** If the 13:00 refresh succeeded and the 13:05 one failed, a visitor at 13:10 should not be told the data is current. Snapshot freshness and ingest health are tracked separately, the panel combines them honestly, and repeated failures can notify the maintainer on Discord or Telegram.
-
-**A page load must never wait on NASA.** The upstream API is slow and rate-limited. An hourly Worker cron decouples them: ingestion writes a processed payload to KV, requests only ever read KV. Users never feel the upstream latency, and the map key is never exposed.
-
-**The edge has no Node.** Running Next.js on Cloudflare Workers through OpenNext means server code cannot rely on Node built-ins such as `fs` or `path`. Every dependency must respect that constraint.
-
-**Portuguese is not one language.** The UI is European Portuguese, and the most common way that slips is a stray Brazilian form or a gerund construction. That's guarded by a test (`npm run test:language`) that scans the Portuguese interface and legal copy, rather than by vigilance.
-
-## Why it's built this way
-
-Wildfire data sources differ in field names, units, confidence scales, update frequency, and geographic coverage. Without an adapter layer, the interface tends to depend on whichever feed it started with.
-
-Here every source is mapped into one normalized model (`src/lib/wildfire/types.ts`) before it reaches a component, and every observation keeps a reference to its dataset's provenance. The map and panel never parse a provider format. Adding EFFIS or the Portuguese civil protection feed means writing an adapter and a reconciliation step, not touching the UI.
-
-```
-NASA FIRMS CSV ──┐
-EFFIS (planned) ─┼─→ adapter ─→ observations + provenance ─→ map / panel
-ANEPC (planned) ─┘                    (+ feed health)
+```mermaid
+flowchart TB
+    FIRMS[NASA FIRMS VIIRS CSV] --> INGEST[Hourly Worker ingest]
+    INGEST --> VALIDATE[Parse, validate and sample]
+    VALIDATE --> SNAPSHOT[(KV snapshot)]
+    INGEST --> HEALTH[(KV ingest health)]
+    SNAPSHOT --> API["/api/fires"]
+    HEALTH --> API
+    API --> NORMALISE[Observation model and provenance]
+    NORMALISE --> MAP[Map and detection panel]
+    MAP --> DETAIL["/api/fires/detail"]
+    DETAIL --> FIRMS
+    MAP --> CONTEXT[Guarded place, air-quality and news routes]
+    MAP --> WEATHER[Open-Meteo model weather in browser]
 ```
 
-## How the data flows
+Map clusters are for display. At detail zoom, the map draws detected sensor pixels; it does not claim a burned perimeter. A derived burned-area value is labelled as an estimate. The operational state stays `unknown` because the live adapter is FIRMS only.
 
-A Cloudflare Worker cron job runs hourly (`workers/firms-ingest.ts`), streams the last three days of VIIRS thermal anomalies for the whole world, and writes a processed snapshot to KV, with an ingest-health record beside it. A snapshot is replaced only by a complete worldwide feed; any failure keeps the last known-good one. The app reads from KV, so a page load never waits on NASA.
+## Engineering decisions
 
-The raw global feed is far larger than a browser should receive, so ingestion samples it: up to 15,000 points, every detection in Portugal, 1,500 slots for the highest radiative power, and a round-robin over 2° cells for the rest. Overview figures describe this sample, and the panel says so.
+- **Separate snapshot freshness from ingest health.** The page can report a recent snapshot with a failed refresh, stale data, a stalled ingest or no usable snapshot.
+- **Keep the last complete snapshot.** A partial or malformed worldwide feed does not replace known-good data.
+- **Keep provenance with the dataset.** Every observation points to shared metadata for provider, product, instrument, source, retrieval and processing times.
+- **Bound upstream work.** Detail boxes are snapped to a grid; coordinates and lookups are validated, cached and budgeted. The app does not spend a KV write for each visitor request.
+- **Treat missing rendering support as a UI state.** MapLibre 6 requires WebGL2. If the browser cannot create a WebGL2 context, the app says the map is unavailable while keeping the detection panel and details available.
+- **Respect the edge runtime.** The Cloudflare Worker build uses OpenNext and avoids Node built-ins in server code.
 
-When a visitor selects a detection, the panel fetches full-resolution FIRMS detections around it, a place name (Nominatim), the nearest PM2.5 reading (OpenAQ) and headlines (Google News RSS) through Worker routes that round inputs, cache results and cap upstream calls. Model weather comes straight from Open-Meteo in the browser.
+## Evidence and checks
 
-[docs/operations.md](docs/operations.md) covers the data model, feed health, alerts, API protection, the free-plan budget and the live smoke checklist. [docs/compliance.md](docs/compliance.md) covers the legal and third-party review.
+The project uses four distinct sources of information:
 
-## Stack
+1. **Observation:** VIIRS acquisition time, radiative power, source confidence and sensor-pixel geometry.
+2. **Derived value:** map intensity bands, location enrichment and area estimates, labelled as inferred or estimated.
+3. **Operational status:** unknown while only FIRMS supplies the live observations.
+4. **Feed health:** separate status for the cached snapshot and the scheduled ingest.
 
-Next.js App Router · TypeScript · MapLibre GL JS 6 via react-map-gl · Turf.js · Tailwind · Playwright
+[PR #3](https://github.com/WhiteBlindness/wildfire-watch/pull/3) integrated provenance, freshness, failure-safe snapshots, operational alerts and source safeguards. [PR #4](https://github.com/WhiteBlindness/wildfire-watch/pull/4) moved to patched MapLibre 6 and covered map behaviour. [PR #5](https://github.com/WhiteBlindness/wildfire-watch/pull/5) added a non-map fallback when WebGL2 is unavailable.
 
-Deployed to Cloudflare Workers through the OpenNext adapter, which is the constraint that shapes the server code: no Node built-ins, no `fs`, no `path`. Everything runs on free tier.
+The PR #5 verification summary reports 173 unit checks, 21 static checks, type-checking, lint, a Cloudflare build, 19 end-to-end checks, a deployment dry run and zero production dependency advisories. Its WebGL2 fallback scenarios include a 390-pixel viewport, keyboard navigation, dark and light themes, feed failure and detection details. The PR reports WCAG 2.2 AA scans on the tested views; this is not an application-wide conformance claim.
 
-The map needs a browser with WebGL2. Without it, the map area says the interactive map is unavailable on that browser, and the panel, the detection list and the detection details work as usual.
+## Run locally
 
-## Running it
+Requirements: Node.js and npm. A NASA FIRMS map key is needed for live satellite data; configure `FIRMS_MAP_KEY` locally and do not commit it.
 
 ```bash
 npm install
 npm run dev
 ```
 
-Live FIRMS data requires a NASA map key in `FIRMS_MAP_KEY` (available free from firms.modaps.eosdis.nasa.gov); see `.env.example` for the other optional secrets. Without a key the map has no snapshot to show. For interface work offline, the end-to-end setup serves the production build with a deterministic synthetic snapshot:
+For offline interface work, the end-to-end setup runs a production build with a deterministic synthetic snapshot in local KV:
 
 ```bash
 npm run build:cloudflare
-node e2e/support/start-server.mjs   # http://127.0.0.1:8788, synthetic data in local KV
+node e2e/support/start-server.mjs
 ```
+
+Run the documented checks:
 
 ```bash
-npm test                 # unit and static tests
-npm run test:unit        # every *.test.ts; `npm run test:unit -- viirs` filters by path
-npm run test:static      # contrast floor, icon semantics, PT-PT copy, legal links, no trackers
-npm run test:e2e         # Playwright against the production build, third parties stubbed
+npm test
 npm run typecheck
 npm run lint
-
-npm run deploy           # build + ship to Cloudflare
+npm run build:cloudflare
+npm run test:e2e
 ```
 
-## Deployment
+The GitHub Actions workflow runs tests, type-checking, lint, the Cloudflare build and end-to-end checks for pull requests. It deploys `main` only after those gates pass. Cloudflare's separate Git integration is disconnected to avoid a second deploy path.
 
-GitHub Actions (`.github/workflows/deploy.yml`) is the only deploy path. On every push to `main` it runs, in order, and stops at the first failure:
+## Development timeline
 
-1. `npm test`
-2. `npm run typecheck`
-3. `npm run lint`
-4. `npm run build:cloudflare` (`opennextjs-cloudflare build`, which creates `.open-next/worker.js` and `.open-next/assets`; on `main`, the CARTO basemap key `CARTO_API_KEY` is passed to the build)
-5. `npm run test:e2e` (Playwright report, traces and videos are kept when it fails)
-6. `npm run deploy:cloudflare` (needs the `CLOUDFLARE_API_TOKEN` secret)
+- **31/07/2026:** authentic FIRMS telemetry and map interactions added in [commit `25c9b52`](https://github.com/WhiteBlindness/wildfire-watch/commit/25c9b52).
+- **01/08/2026:** satellite sampling, clustering and the news parser added in [commit `35672fb`](https://github.com/WhiteBlindness/wildfire-watch/commit/35672fb).
+- **03/08/2026:** global three-day ingestion and temporal map controls added in [commit `43a1b5d`](https://github.com/WhiteBlindness/wildfire-watch/commit/43a1b5d).
+- **12/08/2026:** the map moved to VIIRS sensor geometry in [commit `0752566`](https://github.com/WhiteBlindness/wildfire-watch/commit/0752566).
+- **03/10/2026:** source provenance, feed health and failure-safe ingestion integrated in [PR #3](https://github.com/WhiteBlindness/wildfire-watch/pull/3).
+- **04/10/2026:** patched MapLibre 6 and the WebGL2 unavailable state integrated in [PR #4](https://github.com/WhiteBlindness/wildfire-watch/pull/4) and [PR #5](https://github.com/WhiteBlindness/wildfire-watch/pull/5).
 
-Pull requests to `main` run steps 1 to 5 and never deploy. `npm run deploy` still builds and deploys in one go for local use.
+Dates are commit or merge dates. They do not imply external operational acceptance.
 
-Cloudflare's own Git integration (Workers Builds) is disconnected on purpose. Reconnecting it would deploy every push twice, and with its default commands the build fails, because plain `next build` never produces `.open-next/assets`.
+## Current scope and limitations
 
-## Legal, privacy and accessibility
+- The live source is NASA FIRMS. EFFIS and ANEPC adapters are not implemented in `main`.
+- A map point is a thermal observation, not confirmation that a fire is active, contained or extinguished.
+- The map's sample and estimated area are not a complete incident register or operational severity assessment.
+- The service depends on scheduled Cloudflare Workers, KV and upstream providers; a last-known-good snapshot can become stale when ingestion fails.
+- The interactive map requires WebGL2. Without it, the map is unavailable, but the panel, list and details remain available.
+- Weather, mapping and selected context providers contact the visitor's browser directly. The site has no accounts, advertising or analytics; see the [privacy page](https://wildfire-watch.duartemonteiro.workers.dev/privacidade) and [compliance review](docs/compliance.md).
 
-The site sets no cookies, has no analytics, accounts, forms or advertising, and stores only the visitor's language and theme in `localStorage`. The visitor's browser does talk directly to CARTO, Esri and Open-Meteo, which the privacy policy discloses and the Content Security Policy enforces.
+## Privacy, accessibility and legal pages
 
-- `/sobre`: what the data is and is not, methodology, data sources and attributions, contact and accessibility statement.
-- `/privacidade`: privacy and cookie policy (GDPR, Portuguese Law 41/2004).
+The public site stores the visitor's language and theme in local storage and sets no analytics cookies. The browser contacts CARTO, Esri and Open-Meteo directly; the privacy page explains these requests. The app provides European Portuguese and English, keyboard access and an unavailable-map state when WebGL2 cannot run.
+
+- `/sobre`: data meaning, sources, methodology and accessibility.
+- `/privacidade`: privacy and cookie policy.
 - `/termos`: terms of use.
 
-Legal copy lives in `src/lib/legal/` in both languages; the operator's identity and contact channel live in `src/lib/site.ts`. Adding advertising or visitor statistics would require a consent banner and an update to the privacy policy first.
-
-## Status
-
-The live adapter uses FIRMS. EFFIS and ANEPC adapters are planned; the model already keeps operational status apart from satellite observations so that a second source can add it without overwriting what FIRMS measured.
+The legal pages are project documentation, not a legal certification of every upstream source.
