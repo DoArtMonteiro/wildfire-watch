@@ -4,7 +4,7 @@ import { composeFiresResponseBody, readStoredIngestHealth } from "./fires-respon
 
 const snapshot = JSON.stringify({
   version: 1,
-  source: "NASA FIRMS VIIRS_SNPP_NRT",
+  source: "NASA FIRMS VIIRS_NOAA20_NRT",
   generatedAt: "2026-10-02T13:00:40.000Z",
   sourceRows: 3,
   filteredRows: 2,

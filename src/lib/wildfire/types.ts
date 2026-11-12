@@ -43,7 +43,7 @@ export type DetectionConfidence = "low" | "nominal" | "high";
 export type ObservationKind = "satellite_thermal_detection";
 
 /** Stable identifier of an upstream dataset; observations reference it instead of repeating provenance. */
-export type DatasetId = "nasa-firms:viirs-snpp-nrt";
+export type DatasetId = "nasa-firms:viirs-noaa20-nrt" | "nasa-firms:viirs-snpp-nrt";
 
 /** Who produced a dataset and how it may be credited. Shared by every observation from it. */
 export interface DatasetProvenance {

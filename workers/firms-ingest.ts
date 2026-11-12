@@ -1,7 +1,9 @@
 import {
   FIRMS_CACHE_KEY,
   FIRMS_INGEST_HEALTH_KEY,
+  FIRMS_PRODUCT,
   FIRMS_RECURRENCE_HISTORY_KEY,
+  FIRMS_SOURCE_LABEL,
   isGlobalFirmsCachePayload,
   type CachedFirmsPoint,
   type FirmsCachePayload,
@@ -28,7 +30,7 @@ import {
 } from "../src/lib/wildfire/firms-csv";
 
 const FIRMS_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv";
-const FIRMS_SOURCE = "VIIRS_SNPP_NRT";
+const FIRMS_SOURCE = FIRMS_PRODUCT;
 const FIRMS_DAY_RANGE = 3;
 const FIRMS_AREA = "world";
 
@@ -904,7 +906,7 @@ async function ingestSnapshot(env: FirmsIngestEnv, now: () => number): Promise<{
   const generatedAt = new Date(now()).toISOString();
   const payload: FirmsCachePayload = {
     version: 1,
-    source: "NASA FIRMS VIIRS_SNPP_NRT",
+    source: FIRMS_SOURCE_LABEL,
     generatedAt,
     sourceRows: acc.sourceRows,
     filteredRows: acc.filteredRows,

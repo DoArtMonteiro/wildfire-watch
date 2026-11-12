@@ -105,7 +105,7 @@ test("selects a detection from the keyboard and explains what is known about it"
   await expect(observation).toContainText(pt.confidence.high);
 
   const provenance = page.getByTestId("detection-provenance");
-  await expect(provenance).toContainText("NASA FIRMS · VIIRS_SNPP_NRT");
+  await expect(provenance).toContainText("NASA FIRMS · VIIRS_NOAA20_NRT");
   await expect(provenance).toContainText("VIIRS");
 
   await expect(page.getByText("27,4 °C")).toBeVisible();

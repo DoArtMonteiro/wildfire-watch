@@ -48,7 +48,7 @@ const en: LegalContent = {
             {
               type: "list",
               items: [
-                "Source: detections from the VIIRS sensor on the Suomi NPP satellite, distributed by NASA FIRMS (VIIRS_SNPP_NRT product), covering the last 72 hours.",
+                "Source: detections from the VIIRS sensor on the NOAA-20 satellite, distributed by NASA FIRMS (VIIRS_NOAA20_NRT product), covering the last 72 hours.",
                 "Sampling: the map shows up to 15,000 detections. Every detection in Portugal is kept; elsewhere, the highest radiative power and an even geographic spread take priority. Totals refer to this sample, not to every detection worldwide.",
                 "Fire radiative power (FRP): measured by the satellite in megawatts. The map groups it into four intensity classes (below 10, 10 to 49, 50 to 149, and 150 MW or more) used only for colour. It is not a measure of how severe a fire is.",
                 "Confidence: the category (low, nominal or high) that NASA assigns to each detection.",

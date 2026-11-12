@@ -240,7 +240,7 @@ test("world ingestion omits a local date and never narrows the FIRMS area", () =
   const url = buildFirmsWorldUrl("key/with spaces");
   assert.equal(
     url,
-    "https://firms.modaps.eosdis.nasa.gov/api/area/csv/key%2Fwith%20spaces/VIIRS_SNPP_NRT/world/3",
+    "https://firms.modaps.eosdis.nasa.gov/api/area/csv/key%2Fwith%20spaces/VIIRS_NOAA20_NRT/world/3",
   );
   assert.ok(!url.includes(","));
   assert.ok(!url.match(/\/\d{4}-\d{2}-\d{2}(?:\/|$)/));
@@ -257,7 +257,7 @@ test("global cache validation rejects a fixture-sized regional snapshot", () => 
   }));
   const payload: FirmsCachePayload = {
     version: 1,
-    source: "NASA FIRMS VIIRS_SNPP_NRT",
+    source: "NASA FIRMS VIIRS_NOAA20_NRT",
     generatedAt: "2026-08-01T13:00:00.000Z",
     sourceRows: 10_000,
     filteredRows: 9_000,

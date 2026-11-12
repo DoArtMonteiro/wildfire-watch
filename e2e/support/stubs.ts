@@ -66,7 +66,7 @@ export async function stubThirdParties(page: Page): Promise<StubLog> {
   }));
   await page.route("**/api/fires/detail?**", (route) => json(route, {
     version: 1,
-    source: "NASA FIRMS VIIRS_SNPP_NRT",
+    source: "NASA FIRMS VIIRS_NOAA20_NRT",
     generatedAt: new Date().toISOString(),
     bbox: [-8.2, 40.1, -7.9, 40.3],
     days: 3,

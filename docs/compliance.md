@@ -51,7 +51,7 @@ Sources were searched on 02/10/2026. Several official sites (EUR-Lex, Diário da
 
 | Service | Used for | Where | Auth | Practical limits | Current non-commercial use | Material finding |
 |---|---|---|---|---|---|---|
-| NASA FIRMS (VIIRS_SNPP_NRT) | Detections | Server (cron, detail route) | Free map key, server secret | 5 000 transactions / 10 min per key; area API 1–5 days | Acceptable; acknowledgement shown | Detail requests were allowed up to 10 days; now limited to 5. |
+| NASA FIRMS (VIIRS_NOAA20_NRT; VIIRS_SNPP_NRT until Suomi NPP data delivery ended on 2 November 2026) | Detections | Server (cron, detail route) | Free map key, server secret | 5 000 transactions / 10 min per key; area API 1–5 days | Acceptable; acknowledgement shown | Detail requests were allowed up to 10 days; now limited to 5. |
 | CARTO basemaps | Vector style, tiles, glyphs | Browser | API key now required | Free non-commercial up to 5 M tiles/month | Acceptable once a key is set | **Key required since 23/09/2026.** Keyless raster tiles are watermarked; keyless vector styles may follow. Key support is in place; registering the key is an owner action. |
 | Esri World Imagery (`server.arcgisonline.com`) | Satellite basemap | Browser | None (legacy endpoint) | Not published | Acceptable as non-commercial; "Powered by Esri" shown | Tolerated rather than contracted: Esri says the legacy endpoint is not for commercial use. |
 | Open-Meteo | Model weather for a selected detection | Browser | None | < 10 000 calls/day per IP; free for non-commercial use | Acceptable; CC BY 4.0 credit shown | Kept in the browser on purpose: limits are per IP, and Worker egress addresses are shared with other tenants. |

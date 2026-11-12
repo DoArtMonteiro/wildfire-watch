@@ -207,7 +207,7 @@ test("returns all 3000 points without downsampling", async () => {
     };
 
     assert.equal(body.version, 1);
-    assert.equal(body.source, "NASA FIRMS VIIRS_SNPP_NRT");
+    assert.equal(body.source, "NASA FIRMS VIIRS_NOAA20_NRT");
     assert.equal(body.points.length, ROW_COUNT, "all rows must be returned without downsampling");
     assert.deepEqual(body.bbox, [-10.5, 37.0, -8.5, 39.0]);
     assert.equal(body.days, 3);

@@ -48,7 +48,7 @@ const pt: LegalContent = {
             {
               type: "list",
               items: [
-                "Origem: deteções do sensor VIIRS a bordo do satélite Suomi NPP, distribuídas pelo serviço NASA FIRMS (produto VIIRS_SNPP_NRT), das últimas 72 horas.",
+                "Origem: deteções do sensor VIIRS a bordo do satélite NOAA-20, distribuídas pelo serviço NASA FIRMS (produto VIIRS_NOAA20_NRT), das últimas 72 horas.",
                 "Amostragem: o mapa mostra até 15 000 deteções. Todas as deteções em Portugal são mantidas; no resto do mundo, prevalecem as de maior potência radiativa e uma distribuição geográfica equilibrada. Os totais apresentados referem-se a esta amostra, não a todas as deteções mundiais.",
                 "Potência radiativa (FRP): valor medido pelo satélite, em megawatts. O mapa agrupa-a em quatro classes de intensidade (abaixo de 10, 10 a 49, 50 a 149 e 150 MW ou mais), usadas apenas para as cores. Não é uma medida da gravidade do incêndio.",
                 "Confiança: a categoria (baixa, nominal ou alta) que a NASA atribui a cada deteção.",
