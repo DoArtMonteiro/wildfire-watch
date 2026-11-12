@@ -1,7 +1,14 @@
-import type { CachedFirmsPoint, FirmsCachePayload } from "./firms-cache";
+import {
+  FIRMS_LEGACY_SOURCE_LABEL,
+  FIRMS_PRODUCT,
+  type CachedFirmsPoint,
+  type FirmsCachePayload,
+  type FirmsSourceLabel,
+} from "./firms-cache";
 import { lookupCountry } from "./geo-lookup";
 import type { IngestHealthRecord } from "./ingest-health";
 import type {
+  DatasetId,
   DatasetProvenance,
   DetectionConfidence,
   RadiativeIntensityBand,
@@ -11,15 +18,30 @@ import type {
 
 /** Provenance shared by every detection in the FIRMS snapshot, sent once rather than per point. */
 export const FIRMS_VIIRS_DATASET: DatasetProvenance = {
-  id: "nasa-firms:viirs-snpp-nrt",
+  id: "nasa-firms:viirs-noaa20-nrt",
   provider: "NASA FIRMS",
-  product: "VIIRS_SNPP_NRT",
-  instrument: "VIIRS · Suomi NPP",
+  product: FIRMS_PRODUCT,
+  instrument: "VIIRS · NOAA-20",
   observationKind: "satellite_thermal_detection",
   reportsOperationalStatus: false,
   attribution: "NASA Fire Information for Resource Management System (FIRMS)",
   sourceUrl: "https://www.earthdata.nasa.gov/firms",
 };
+
+/**
+ * Snapshots written before 2 November 2026 (end of Suomi NPP data delivery)
+ * come from Suomi NPP. They stay labelled as such for as long as they are served.
+ */
+export const FIRMS_VIIRS_SNPP_DATASET: DatasetProvenance = {
+  ...FIRMS_VIIRS_DATASET,
+  id: "nasa-firms:viirs-snpp-nrt",
+  product: "VIIRS_SNPP_NRT",
+  instrument: "VIIRS · Suomi NPP",
+};
+
+export function datasetForSource(source: FirmsSourceLabel): DatasetProvenance {
+  return source === FIRMS_LEGACY_SOURCE_LABEL ? FIRMS_VIIRS_SNPP_DATASET : FIRMS_VIIRS_DATASET;
+}
 
 /** Lower bounds (MW) of each radiative intensity band; below `moderate` is `low`. */
 export const RADIATIVE_INTENSITY_BANDS_MW = { moderate: 10, high: 50, very_high: 150 } as const;
@@ -42,11 +64,14 @@ export function confidenceFromStoredValue(storedPct: number): DetectionConfidenc
   return "low";
 }
 
-export function cachedPointToDetection(point: CachedFirmsPoint): ThermalDetection {
+export function cachedPointToDetection(
+  point: CachedFirmsPoint,
+  datasetId: DatasetId = FIRMS_VIIRS_DATASET.id,
+): ThermalDetection {
   return {
     kind: "satellite_thermal_detection",
     id: point.id,
-    datasetId: FIRMS_VIIRS_DATASET.id,
+    datasetId,
     location: { lat: point.lat, lng: point.lng },
     acquiredAt: point.detectedAt,
     frpMw: point.frpMw,
@@ -69,7 +94,7 @@ export function firmsSnapshotProvenance(
     ? ingest.lastSuccessAt
     : null;
   return {
-    dataset: FIRMS_VIIRS_DATASET,
+    dataset: datasetForSource(payload.source),
     retrievedAt,
     processedAt: payload.generatedAt,
     sourceRows: payload.sourceRows,

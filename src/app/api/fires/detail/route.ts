@@ -1,5 +1,5 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
-import type { CachedFirmsPoint } from "@/lib/wildfire/firms-cache";
+import { FIRMS_PRODUCT, FIRMS_SOURCE_LABEL, type CachedFirmsPoint } from "@/lib/wildfire/firms-cache";
 import { parseCsv, toPoint } from "@/lib/wildfire/firms-csv";
 import {
   UpstreamBusyError,
@@ -16,7 +16,7 @@ import {
 export const dynamic = "force-dynamic";
 
 const FIRMS_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv";
-const FIRMS_SOURCE = "VIIRS_SNPP_NRT";
+const FIRMS_SOURCE = FIRMS_PRODUCT;
 const DETAIL_CACHE_TTL_SECONDS = 1_800; // 30 minutes
 const MAX_BBOX_SPAN_DEGREES = 5;
 /**
@@ -44,7 +44,7 @@ const DETAIL_ERROR_HEADERS = { "Cache-Control": "no-store" };
 
 export interface FireDetailPayload {
   version: 1;
-  source: "NASA FIRMS VIIRS_SNPP_NRT";
+  source: typeof FIRMS_SOURCE_LABEL;
   generatedAt: string;
   bbox: [number, number, number, number];
   days: number;
@@ -275,7 +275,7 @@ async function loadDetail(
 
   const payload: FireDetailPayload = {
     version: 1,
-    source: "NASA FIRMS VIIRS_SNPP_NRT",
+    source: FIRMS_SOURCE_LABEL,
     generatedAt: new Date().toISOString(),
     bbox,
     days,

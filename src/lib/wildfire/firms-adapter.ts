@@ -1,12 +1,12 @@
-import { isGlobalFirmsCachePayload } from "./firms-cache";
-import type { CachedFirmsPoint } from "./firms-cache";
+import { isFirmsSourceLabel, isGlobalFirmsCachePayload } from "./firms-cache";
+import type { CachedFirmsPoint, FirmsSourceLabel } from "./firms-cache";
 import { cachedPointToDetection, firmsSnapshotProvenance } from "./firms-dataset";
 import { parseIngestHealth } from "./ingest-health";
 import type { DetectionFeedSnapshot } from "./types";
 
 interface FireDetailPayload {
   version: 1;
-  source: "NASA FIRMS VIIRS_SNPP_NRT";
+  source: FirmsSourceLabel;
   generatedAt: string;
   bbox: [number, number, number, number];
   days: number;
@@ -17,7 +17,7 @@ function isFireDetailPayload(value: unknown): value is FireDetailPayload {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<FireDetailPayload>;
   return candidate.version === 1
-    && candidate.source === "NASA FIRMS VIIRS_SNPP_NRT"
+    && isFirmsSourceLabel(candidate.source)
     && typeof candidate.generatedAt === "string"
     && Array.isArray(candidate.bbox)
     && candidate.bbox.length === 4
@@ -39,9 +39,10 @@ export async function fetchDetectionSnapshot(signal?: AbortSignal): Promise<Dete
   }
 
   const ingest = parseIngestHealth((payload as { ingestHealth?: unknown }).ingestHealth);
+  const provenance = firmsSnapshotProvenance(payload, ingest);
   return {
-    detections: payload.points.map(cachedPointToDetection),
-    provenance: firmsSnapshotProvenance(payload, ingest),
+    detections: payload.points.map((point) => cachedPointToDetection(point, provenance.dataset.id)),
+    provenance,
     ingest,
   };
 }

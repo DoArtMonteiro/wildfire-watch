@@ -6,7 +6,7 @@ export function thermalDetection(overrides: Partial<ThermalDetection> & Pick<The
   const frpMw = overrides.frpMw ?? 25;
   return {
     kind: "satellite_thermal_detection",
-    datasetId: "nasa-firms:viirs-snpp-nrt",
+    datasetId: "nasa-firms:viirs-noaa20-nrt",
     location: { lng: -9, lat: 39 },
     acquiredAt: "2026-08-01T12:00:00.000Z",
     confidence: "nominal",

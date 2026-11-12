@@ -50,9 +50,30 @@ export interface CachedFirmsPoint {
   trackKm?: number;
 }
 
+/**
+ * The FIRMS product the ingest and the detail route request. NASA and NOAA
+ * stopped delivering Suomi NPP data on 2 November 2026, after which
+ * VIIRS_SNPP_NRT returns a header-only CSV; NOAA-20 carries the same VIIRS
+ * sensor and is the replacement NASA recommends.
+ */
+export const FIRMS_PRODUCT = "VIIRS_NOAA20_NRT";
+export const FIRMS_SOURCE_LABEL = "NASA FIRMS VIIRS_NOAA20_NRT";
+/**
+ * Label on snapshots written before the switch. Still accepted when reading so
+ * the last known-good snapshot keeps being served (and labelled as Suomi NPP)
+ * until the first NOAA-20 snapshot replaces it.
+ */
+export const FIRMS_LEGACY_SOURCE_LABEL = "NASA FIRMS VIIRS_SNPP_NRT";
+
+export type FirmsSourceLabel = typeof FIRMS_SOURCE_LABEL | typeof FIRMS_LEGACY_SOURCE_LABEL;
+
+export function isFirmsSourceLabel(value: unknown): value is FirmsSourceLabel {
+  return value === FIRMS_SOURCE_LABEL || value === FIRMS_LEGACY_SOURCE_LABEL;
+}
+
 export interface FirmsCachePayload {
   version: 1;
-  source: "NASA FIRMS VIIRS_SNPP_NRT";
+  source: FirmsSourceLabel;
   generatedAt: string;
   sourceRows: number;
   filteredRows: number;
@@ -104,7 +125,7 @@ export function isFirmsCachePayload(value: unknown): value is FirmsCachePayload 
   if (!value || typeof value !== "object") return false;
   const payload = value as Partial<FirmsCachePayload>;
   return payload.version === 1
-    && payload.source === "NASA FIRMS VIIRS_SNPP_NRT"
+    && isFirmsSourceLabel(payload.source)
     && typeof payload.generatedAt === "string"
     && Number.isInteger(payload.sourceRows)
     && Number.isInteger(payload.filteredRows)

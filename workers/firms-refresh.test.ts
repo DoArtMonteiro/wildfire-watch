@@ -127,6 +127,37 @@ test("a regional or truncated feed is refused and the counts are recorded", asyn
   }
 });
 
+test("the feed is requested for a product that is still delivered and labelled as such", async () => {
+  const kv = new FakeKv();
+  const urls: string[] = [];
+  const restore = withFetch(async (url) => { urls.push(url); return new Response(worldCsv(6_000), { status: 200 }); });
+  try {
+    const report = await refreshFirmsCache(env(kv), { now: () => Date.parse("2026-11-12T13:00:00.000Z") });
+    assert.equal(report.health.outcome, "success");
+    assert.equal(urls.length, 1);
+    assert.match(urls[0], /\/VIIRS_NOAA20_NRT\/world\/3$/);
+    assert.equal(report.payload?.source, "NASA FIRMS VIIRS_NOAA20_NRT");
+  } finally {
+    restore();
+  }
+});
+
+test("a header-only feed (a decommissioned satellite product) is refused and the last snapshot is kept", async () => {
+  const kv = new FakeKv();
+  kv.store.set(FIRMS_CACHE_KEY, "previous-snapshot");
+  const header = "latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,confidence,version,bright_ti5,frp,daynight\n";
+  const restore = withFetch(async () => new Response(header, { status: 200 }));
+  try {
+    const report = await refreshFirmsCache(env(kv), { now: () => Date.parse("2026-11-12T13:00:00.000Z") });
+    assert.equal(report.payload, null);
+    assert.equal(report.health.errorCode, "incomplete_feed");
+    assert.equal(report.health.sourceRows, 0);
+    assert.equal(kv.store.get(FIRMS_CACHE_KEY), "previous-snapshot");
+  } finally {
+    restore();
+  }
+});
+
 test("a failed snapshot write is reported as a storage error", async () => {
   const kv = new FakeKv();
   kv.failingKeys.add(FIRMS_CACHE_KEY);

@@ -43,7 +43,7 @@ export function buildSnapshot(nowMs, { ageMinutes = 10 } = {}) {
   }));
   return {
     version: 1,
-    source: "NASA FIRMS VIIRS_SNPP_NRT",
+    source: "NASA FIRMS VIIRS_NOAA20_NRT",
     generatedAt: new Date(generatedAtMs).toISOString(),
     sourceRows: 214_806,
     filteredRows: 181_233,
